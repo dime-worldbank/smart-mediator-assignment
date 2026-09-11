@@ -253,23 +253,16 @@ class QPSolver(BaseSolver):
             upper.append(1.0)
             row_id += 1
 
-        # Box bounds 0 <= xi <= load + 1.
+        # xi >= 0; upper bound (load + 1) removed per the 2026-09-10 meeting (matches the paper
+        # reproduction). See reference_slaked_qp.py.
         for med in self._us:
             idx = self._xi_index[med]
-            xi_ub = float(self.mediator_case_loads[med] + 1)
 
             rows.append(row_id)
             cols.append(idx)
             data.append(1.0)
             lower.append(0.0)
             upper.append(np.inf)
-            row_id += 1
-
-            rows.append(row_id)
-            cols.append(idx)
-            data.append(1.0)
-            lower.append(-np.inf)
-            upper.append(xi_ub)
             row_id += 1
 
         A = sp.csc_matrix((data, (rows, cols)), shape=(row_id, self._n_var))
