@@ -221,7 +221,10 @@ class QPSolver(BaseSolver):
 
         for d in range(self.time_horizon):
             for med in self._us:
-                for (_, v) in edges_by_u.get(med, []):
+                med_edges = edges_by_u.get(med)
+                if not med_edges:
+                    continue  # reference skips capacity rows for mediators with no eligible edges
+                for (_, v) in med_edges:
                     if self._active_indicator(v, d):
                         rows.append(row_id)
                         cols.append(self._x_index[(med, v)])
@@ -331,11 +334,13 @@ class QPSolver(BaseSolver):
             z = m.addMVar(self._n_var, lb=-GRB.INFINITY, ub=GRB.INFINITY)
             m.setObjective(0.5 * (z @ P @ z) + q @ z, GRB.MINIMIZE)
 
-            # np.inf is not a valid Gurobi bound; GRB.INFINITY is its sentinel.
-            u_g = np.where(np.isposinf(u), GRB.INFINITY, u)
-            l_g = np.where(np.isneginf(l), -GRB.INFINITY, l)
-            c_ub = m.addConstr(A @ z <= u_g)
-            m.addConstr(A @ z >= l_g)
+            # Add only the finite-bound side of each row: a u=+inf / l=-inf row is not a real
+            # constraint, and passing it as a +/-1e100 RHS destabilizes the barrier (NaN iterates at
+            # lambda=0). The <= mask also lets us scatter shadow-price duals back to full A-rows.
+            u_mask = np.isfinite(u)
+            l_mask = np.isfinite(l)
+            c_ub = m.addConstr(A[u_mask] @ z <= u[u_mask])
+            m.addConstr(A[l_mask] @ z >= l[l_mask])
 
             m.optimize()
 
@@ -348,12 +353,14 @@ class QPSolver(BaseSolver):
                     stacklevel=2,
                 )
 
-            # Capacity-row shadow prices come from the <= constraint (cap rows have l=-inf, so
-            # the >= constraint is slack there). Gurobi's Pi for a <= row in a min problem is
-            # <= 0; negate to match OSQP's (and the retired solver's) sign. Unavailable for some
-            # statuses -> leave None so extract_mediator_shadow_prices returns zeros.
+            # Capacity-row duals come from the <= side (cap rows have finite u -> in c_ub). Negate
+            # Gurobi's Pi (<= 0 for a <= row in a min problem) to match OSQP's sign, and scatter
+            # c_ub's Pi back into a full A-row vector (zeros elsewhere) so _cap_rows[(med, d)]
+            # indexing holds. None on failure -> extract_mediator_shadow_prices returns zeros.
             try:
-                self._gurobi_row_duals = -np.array(c_ub.Pi, dtype=float)
+                full_duals = np.zeros(A.shape[0], dtype=float)
+                full_duals[u_mask] = -np.array(c_ub.Pi, dtype=float)
+                self._gurobi_row_duals = full_duals
             except (AttributeError, gp.GurobiError):
                 self._gurobi_row_duals = None
 
@@ -547,6 +554,10 @@ class QPSolver(BaseSolver):
         self._gurobi_solve_info = None
 
         self._build_graph(cases, phantom_cases)
+        if not self._edges:
+            # No eligible mediator for any case -> nothing to assign; return before building a
+            # variable-free QP the backends can't set up.
+            return {}
         P, q, A, l, u = self._build_matrices()
 
         wall_start = time.perf_counter()
@@ -556,6 +567,10 @@ class QPSolver(BaseSolver):
             self._setup_osqp(P, q, A, l, u)
             z = self._solve_model()
         wall_clock_s = time.perf_counter() - wall_start
+
+        # Reject a non-finite iterate (e.g. Gurobi SUBOPTIMAL returning NaNs) - not a valid assignment.
+        if not np.isfinite(z).all():
+            raise RuntimeError("QP solver returned a non-finite primal solution")
 
         if collect_stats:
             self.last_solve_stats = self._build_solve_stats(P, q, A, z, wall_clock_s)

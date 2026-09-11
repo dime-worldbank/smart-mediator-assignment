@@ -317,3 +317,59 @@ def test_solve_stats_collected_when_requested():
     import math
     assert math.isfinite(s["objective_value"])
     assert math.isfinite(s["prim_res"]) and math.isfinite(s["dual_res"])
+
+
+@pytest.mark.skipif(osqp_missing, reason="osqp extra not installed")
+def test_no_eligible_mediators_returns_empty():
+    # No eligibility -> no edges -> nothing to assign. Must return {} rather than build a
+    # variable-free QP the backend can't set up (defensive, per the reference's pre-solve skip).
+    from smart_mediator_assignment import QPSolver
+    solver = QPSolver(valid_mediators=[1], mediator_case_loads={1: 0}, capacity=3,
+                      mediator_vas={1: 0.2}, med_by_court_case_type={},
+                      lambda_penalty=1.0, time_horizon=10)
+    case = SimpleCase(id=1, case_type="Family group", court_station="MILIMANI",
+                      referral_date=date(2023, 1, 1), p_value=0.5)
+    assert solver.solve([case], phantom_cases=[], current_day=date(2023, 1, 1)) == {}
+
+
+@pytest.mark.skipif(osqp_missing, reason="osqp extra not installed")
+def test_edgeless_mediator_has_no_capacity_rows():
+    # A valid mediator with no eligible cases in the batch gets no capacity rows (matching the
+    # reference), so it carries no spurious slack penalty and no phantom shadow price.
+    from smart_mediator_assignment import QPSolver
+    solver = QPSolver(valid_mediators=[1, 2], mediator_case_loads={1: 0, 2: 5}, capacity=3,
+                      mediator_vas={1: 0.2, 2: 0.1},
+                      med_by_court_case_type={"MILIMANI": {"Family group": [1]}},  # only med 1
+                      lambda_penalty=0.1, time_horizon=10)
+    case = SimpleCase(id=1, case_type="Family group", court_station="MILIMANI",
+                      referral_date=date(2023, 1, 1), p_value=0.5)
+    solver.solve([case], phantom_cases=[], current_day=date(2023, 1, 1))
+    assert not any(med == 2 for (med, _d) in solver._cap_rows)   # edgeless med 2: no cap rows
+    assert any(med == 1 for (med, _d) in solver._cap_rows)
+    assert solver.extract_mediator_shadow_prices().get(2, 0.0) == 0.0
+
+
+@pytest.mark.skipif(gurobi_missing, reason="gurobipy extra not installed")
+@pytest.mark.skipif(osqp_missing, reason="osqp extra not installed")
+def test_gurobi_lambda_zero_all_cases_past_is_finite():
+    # Regression: lambda_penalty=0 with every case appointed before current_day previously made
+    # the Gurobi backend return SUBOPTIMAL with NaN allocations (the infinite-bound constraint
+    # rows destabilized the barrier). It must now return a finite, valid assignment.
+    import math
+    from smart_mediator_assignment import QPSolver
+    kw = dict(valid_mediators=[1, 2], mediator_case_loads={1: 0, 2: 0}, capacity=3,
+              mediator_vas={1: 0.2, 2: 0.1},
+              med_by_court_case_type={"MILIMANI": {"Family group": [1, 2]}},
+              lambda_penalty=0.0, time_horizon=10)
+    cases = [SimpleCase(id=i, case_type="Family group", court_station="MILIMANI",
+                        referral_date=date(2022, 1, 1), p_value=0.5) for i in (1, 2, 3)]
+    cur = date(2023, 6, 1)
+    try:
+        dist = QPSolver(use_gurobi=True, **kw).solve(cases, phantom_cases=[], current_day=cur)
+    except Exception as e:  # noqa: BLE001
+        if "license" in str(e).lower() or "size-limited" in str(e).lower():
+            pytest.skip(f"Gurobi license unavailable: {e}")
+        raise
+    for cid in (1, 2, 3):
+        assert all(math.isfinite(p) for _, p in dist[cid]), cid
+        assert abs(sum(p for _, p in dist[cid]) - 1.0) < 1e-6, cid
