@@ -451,10 +451,13 @@ def _fit_and_score(
     df_case = df_case.merge(params_dict['params_referral_mode'], on='referral_mode', how='left')
     df_case = df_case.merge(params_dict['params_highcourt'], on='highcourt', how='left')
     df_case = df_case.merge(params_dict['params_courtofappeal'], on='courtofappeal', how='left')
-    # params_const is keyed on case_outcome_agreement {0,1}; pending cases (null outcome) do
-    # not match, so const_val stays NaN and the skipna sum below drops the intercept for them.
-    # Faithful to VA_Antoine.py - changing it would diverge from the parity baseline.
     df_case = df_case.merge(params_dict['params_const'], on='case_outcome_agreement', how='left')
+
+    # Add the intercept to every case unconditionally, matching Stata's `predict, xb`. params_const
+    # is keyed on outcome {0,1}, so null-outcome cases (pending <=90d, kept in df_case for the
+    # assignment problem) would otherwise miss it and be biased low. Deliberate divergence from
+    # VA_Antoine.py, which left these NaN.
+    df_case['const_val'] = df_case['const_val'].fillna(params_dict['params_const']['const_val'].iloc[0])
 
     # Calculate predictions and residuals
     df_case['p_pred'] = df_case[[
