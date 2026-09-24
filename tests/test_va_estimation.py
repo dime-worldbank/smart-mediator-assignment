@@ -459,6 +459,9 @@ def test_va_model_is_the_fit():
                                   quasiyear=int(row['quasiyear']))
         assert predicted == pytest.approx(p_pred[case_id], abs=1e-12), case_id
 
+    # a time of day doesn't move a month-end appointment out of its bucket
+    assert model.quasiyear_of(datetime(2022, 6, 30, 12)) == model.quasiyear_of(datetime(2022, 6, 30))
+
     # a station the fit never saw has no coefficient, i.e. the MILIMANI reference
     base = dict(case_type="Civil Cases", referral_mode="Referred by Court",
                 court_type="Magistrate Court", appt_month=3)

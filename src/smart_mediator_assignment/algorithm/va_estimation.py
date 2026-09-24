@@ -233,7 +233,9 @@ def _quasiyear_bounds(anchor, t: int):
 
 def _calendar_quasiyear(anchor, appointment_date) -> Optional[int]:
     """Calendar quasiyear bucket of a date, before the fit's oldest-bucket merge."""
-    appointed = pd.Timestamp(appointment_date)
+    # Bucket bounds are midnights (the fit's appointment dates carry no time of day), so a
+    # later time on a month-end would otherwise fall past that bucket's upper bound.
+    appointed = pd.Timestamp(appointment_date).normalize()
     for t in range(31):
         lb, ub = _quasiyear_bounds(anchor, t)
         if lb < appointed <= ub:
