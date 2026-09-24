@@ -1,12 +1,30 @@
 from abc import ABC, abstractmethod
 from datetime import date, datetime
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Collection, Dict, List, Optional, Tuple, Union
 
-from ..core.types import MediatorId, CaseId
+from ..core.types import MediatorId, CaseId, MedByCrtCaseType
 from ..core.case import CaseProtocol
 
 
 AssignmentDistribution = Dict[CaseId, List[Tuple[MediatorId, float]]]
+
+
+def eligible_mediators_for_case(
+    case: CaseProtocol,
+    med_by_court_case_type: MedByCrtCaseType,
+    valid_mediators: Collection[MediatorId],
+) -> List[MediatorId]:
+    """Mediators a case may be assigned to, restricted to `valid_mediators`.
+
+    A case's own `eligible_mediator_ids` (when set) replaces the court-station x case-type
+    lookup, so callers can apply rules the lookup can't express: per-case exclusions such
+    as previously rejected mediators, Kadhi-court religion, unavailability on the date.
+    """
+    explicit = getattr(case, 'eligible_mediator_ids', None)
+    if explicit is not None:
+        return [m for m in explicit if m in valid_mediators]
+    by_type = med_by_court_case_type.get(case.court_station, {})
+    return [m for m in by_type.get(case.case_type, []) if m in valid_mediators]
 
 
 class BaseSolver(ABC):
