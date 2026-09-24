@@ -156,14 +156,14 @@ def generate_phantom_cases_from_pool(
     va_model: VAModel,
     rng: np.random.Generator,
     starting_id: int = -1,
-    discount: float = 0.1,
 ) -> Tuple[List[SimpleCase], int]:
     """Phantom cases for the next `time_horizon` days, drawn from recent arrivals.
 
     Each day draws a Poisson(`pool.daily_rate`) count, then that many covariate vectors
     uniformly from the pool, so the mix across court stations, case types and other
     covariates matches recent arrivals. Each phantom's p_value is the VA model's
-    prediction at its arrival date, minus `discount`.
+    prediction at its arrival date, undiscounted: the solver already puts real cases
+    first (their assignment must sum to 1, a phantom's only to at most 1).
 
     Returns:
         Tuple of (list of phantom cases, next available phantom ID)
@@ -178,7 +178,7 @@ def generate_phantom_cases_from_pool(
         count = rng.poisson(pool.daily_rate)
         for idx in rng.integers(0, len(pool.records), size=count):
             record = pool.records[idx]
-            p_val = va_model.predict_arrival(arrival_date=arrival_date, **record) - discount
+            p_val = va_model.predict_arrival(arrival_date=arrival_date, **record)
             phantom_cases.append(SimpleCase(
                 id=phantom_id,
                 case_type=record['case_type'],

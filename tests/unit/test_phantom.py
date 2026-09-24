@@ -288,9 +288,9 @@ def test_phantoms_drawn_from_pool_and_scored_by_model():
     pool = ArrivalPool(records=(kakamega, milimani, milimani, milimani), daily_rate=20.0)
     start = date(2026, 3, 9)
 
-    def generate(seed=7, discount=0.1, **kwargs):
+    def generate(seed=7, **kwargs):
         args = dict(current_day=start, time_horizon=10, pool=pool, va_model=model,
-                    rng=np.random.default_rng(seed), starting_id=-5, discount=discount)
+                    rng=np.random.default_rng(seed), starting_id=-5)
         args.update(kwargs)
         return generate_phantom_cases_from_pool(**args)
 
@@ -304,13 +304,11 @@ def test_phantoms_drawn_from_pool_and_scored_by_model():
         assert 0 <= (p.referral_date - start).days < 10
         month = 0.02 if p.referral_date.month == 3 else 0.0
         station_etc = 0.05 + 0.04 + 0.01 if record is kakamega else 0.0
-        assert p.p_value == pytest.approx(0.5 + month + station_etc - 0.1)
+        assert p.p_value == pytest.approx(0.5 + month + station_etc)
 
     ids = [p.id for p in phantoms]
     assert len(set(ids)) == len(ids) and max(ids) == -5 and next_id == -5 - len(ids)
     # the mix follows the pool's shares
     assert Counter(p.court_station for p in phantoms)["MILIMANI"] / len(phantoms) == pytest.approx(0.75, abs=0.05)
-    # reproducible from the rng seed; discount is a plain subtraction
-    undiscounted, _ = generate(discount=0.0)
-    assert [p.p_value - 0.1 for p in undiscounted] == pytest.approx([p.p_value for p in phantoms])
+    assert generate() == (phantoms, next_id)    # reproducible from the rng seed
     assert generate(pool=ArrivalPool(records=(), daily_rate=0.0)) == ([], -5)

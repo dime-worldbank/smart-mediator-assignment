@@ -117,13 +117,13 @@ from smart_mediator_assignment import build_arrival_pool, generate_phantom_cases
 pool = build_arrival_pool(recent_cases, as_of=today, window_days=182)
 phantoms, _ = generate_phantom_cases_from_pool(
     current_day=today, time_horizon=config.time_horizon, pool=pool,
-    va_model=va_result.model, rng=np.random.default_rng(seed), discount=0.1,
+    va_model=va_result.model, rng=np.random.default_rng(seed),
 )
 result = get_recommendations(case, ..., phantom_cases=phantoms)
 ```
 
 Each day draws a Poisson(`pool.daily_rate`) number of arrivals, then that many covariate vectors from
-the pool; each phantom's p is the VA model's prediction at its arrival date, minus `discount`.
+the pool; each phantom's p is the VA model's prediction at its arrival date.
 
 ### VA Estimation (Batch)
 
