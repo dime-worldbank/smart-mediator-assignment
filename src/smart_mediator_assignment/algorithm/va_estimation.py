@@ -7,8 +7,8 @@ characteristics, then applies shrinkage to produce stable VA estimates.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Union, Optional, List, Dict
+from datetime import date, datetime
+from typing import Union, Optional, List, Dict, FrozenSet
 import calendar
 import pandas as pd
 import numpy as np
@@ -57,6 +57,74 @@ class CasePrediction:
     case_outcome_agreement: Optional[int]
 
 
+@dataclass(frozen=True)
+class VAModel:
+    """The fitted agreement regression, net of the mediator effect.
+
+    Predicts a case's p_pred from its covariates using the coefficients of the last
+    VA fit, so cases that were not in the fitted data (e.g. phantom future arrivals)
+    get a prediction consistent with the fitted cases' p_pred.
+    """
+
+    intercept: float
+    # covariate -> {model-space level: coefficient}; levels absent from a table
+    # contribute 0, as omitted/unmatched levels do in the fit's skipna sum.
+    coefficients: Dict[str, Dict]
+    # Raw labels collapsed to 'zzzSmall' by the fit's small-group rule.
+    small_court_stations: FrozenSet[str] = frozenset()
+    small_case_types: FrozenSet[str] = frozenset()
+
+    def predict(
+        self,
+        *,
+        case_type: str,
+        court_station: str,
+        referral_mode: str,
+        court_type: str,
+        appt_month: int,
+        quasiyear: int = 0,
+    ) -> float:
+        """p_pred for one case; `quasiyear` 0 is the most recent bucket."""
+        casetype = simplify_case_types(
+            pd.Series([case_type]), family_group_label='AAAFamily group'
+        ).iloc[0]
+        if casetype in self.small_case_types:
+            casetype = 'zzzSmall'
+        station = 'AAAMilimani' if court_station == 'MILIMANI' else court_station
+        if station in self.small_court_stations:
+            station = 'zzzSmall'
+        levels = {
+            'appt_month': float(appt_month),
+            'quasiyear': float(quasiyear),
+            'casetype_simplified': casetype,
+            'court_station': station,
+            'referral_mode': referral_mode,
+            'highcourt': float(court_type == 'High Court'),
+            'courtofappeal': float(court_type == 'Court of Appeal'),
+        }
+        total = self.intercept
+        for var, level in levels.items():
+            coef = self.coefficients.get(var, {}).get(level, 0.0)
+            if pd.notna(coef):
+                total += float(coef)
+        return total
+
+    def predict_arrival(
+        self,
+        *,
+        case_type: str,
+        court_station: str,
+        referral_mode: str,
+        court_type: str,
+        arrival_date: Union[date, datetime],
+    ) -> float:
+        """p_pred for a case arriving on `arrival_date` (its month, most recent quasiyear)."""
+        return self.predict(
+            case_type=case_type, court_station=court_station, referral_mode=referral_mode,
+            court_type=court_type, appt_month=arrival_date.month, quasiyear=0,
+        )
+
+
 @dataclass
 class VAEstimationResult:
     """Results from VA estimation."""
@@ -67,6 +135,7 @@ class VAEstimationResult:
     # Clean, collapsed, pre-fit frame -- reusable as the input to
     # estimate_va_from_prepared for incremental refresh without re-cleaning.
     prepared: Optional[pd.DataFrame] = None
+    model: Optional[VAModel] = None
 
     def get_va_dict(self) -> Dict[MediatorId, float]:
         """Return VA estimates as dictionary."""
@@ -265,20 +334,26 @@ def estimate_va(
     # Group small court stations
     concltotal = df[df['case_status'] == 'CONCLUDED'].groupby('court_station').size()
     df = df.merge(concltotal.rename('concltotal_cs'), on='court_station', how='left')
-    df.loc[
-        (df['concltotal_cs'] <= config.min_court_station_cases) | pd.isna(df['concltotal_cs']),
-        'court_station'
-    ] = 'zzzSmall'
+    small_cs_mask = (
+        (df['concltotal_cs'] <= config.min_court_station_cases) | pd.isna(df['concltotal_cs'])
+    )
+    small_court_stations = frozenset(df.loc[small_cs_mask, 'court_station'])
+    df.loc[small_cs_mask, 'court_station'] = 'zzzSmall'
 
     # Group small case types
     concltotal = df[df['case_status'] == 'CONCLUDED'].groupby('casetype_simplified').size()
     df = df.merge(concltotal.rename('concltotal_ct'), on='casetype_simplified', how='left')
-    df.loc[df['concltotal_ct'] < config.min_case_type_cases, 'casetype_simplified'] = 'zzzSmall'
+    small_ct_mask = df['concltotal_ct'] < config.min_case_type_cases
+    small_case_types = frozenset(df.loc[small_ct_mask, 'casetype_simplified'])
+    df.loc[small_ct_mask, 'casetype_simplified'] = 'zzzSmall'
 
     # Clean, collapsed, pre-fit frame -- captured before df_case's label backfill
     # below and before _fit_and_score mutates df, so it can be reused verbatim by
-    # estimate_va_from_prepared for incremental refresh.
+    # estimate_va_from_prepared for incremental refresh. The collapse sets ride along
+    # in attrs because the collapsed labels no longer reveal which raw labels they absorbed.
     prepared_frame = df.copy()
+    prepared_frame.attrs['small_court_stations'] = small_court_stations
+    prepared_frame.attrs['small_case_types'] = small_case_types
 
     # Backfill the small-group collapse (mediator_id/court_station/casetype_simplified ->
     # -999/zzzSmall) onto df_case for rows that survived into the fitted df. Without this,
@@ -300,7 +375,7 @@ def estimate_va(
     df_case.loc[qy_mask, 'quasiyear'] = df['quasiyear'].max()
     df_case.loc[df_case['appt_month'].isna(), 'appt_month'] = anchor_date.month
 
-    result = _fit_and_score(df, df_case, config)
+    result = _fit_and_score(df, df_case, config, small_court_stations, small_case_types)
     result.prepared = prepared_frame
     return result
 
@@ -345,7 +420,11 @@ def estimate_va_from_prepared(
     # Labels already collapsed in `prepared` -- unlike the fresh path, no 4.1 backfill here.
     df_case = df.copy()
 
-    result = _fit_and_score(df, df_case, config)
+    result = _fit_and_score(
+        df, df_case, config,
+        prepared.attrs.get('small_court_stations', frozenset()),
+        prepared.attrs.get('small_case_types', frozenset()),
+    )
     result.prepared = prepared
     return result
 
@@ -354,6 +433,8 @@ def _fit_and_score(
     df: pd.DataFrame,
     df_case: pd.DataFrame,
     config: VAEstimationConfig,
+    small_court_stations: FrozenSet[str] = frozenset(),
+    small_case_types: FrozenSet[str] = frozenset(),
 ) -> VAEstimationResult:
     """
     Shared core: regression, prediction, and shrinkage over an already-cleaned frame.
@@ -424,6 +505,16 @@ def _fit_and_score(
     )
     params_dict['params_const']['case_outcome_agreement'] = 1
     params_dict['params_const'].loc[-1] = [0, params_dict['params_const']['const_val'].mean()]
+
+    model = VAModel(
+        intercept=float(params_dict['params_const']['const_val'].iloc[0]),
+        coefficients={
+            x: dict(zip(params_dict[f"params_{x}"][x], params_dict[f"params_{x}"][f"{x}_val"]))
+            for x in dependent_vars if x != 'const'
+        },
+        small_court_stations=frozenset(small_court_stations),
+        small_case_types=frozenset(small_case_types),
+    )
 
     # Handle pending cases (applied to both frames; the fresh-pending drop is df-only
     # since df_case must still carry every windowed case through to prediction)
@@ -552,5 +643,6 @@ def _fit_and_score(
     return VAEstimationResult(
         mediator_vas=mediator_vas,
         case_predictions=case_predictions,
-        sigma=float(sigma)
+        sigma=float(sigma),
+        model=model,
     )
