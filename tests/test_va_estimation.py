@@ -446,7 +446,7 @@ def test_va_model_is_the_fit():
     raw = {c.id: c for c in cases}
     assert model.small_court_stations == {"TINY"}
 
-    oldest = fitted['quasiyear'].max()
+    assert model.merged_quasiyear == fitted['quasiyear'].max() + 1  # the data's oldest bucket is short
     for case_id, row in fitted.iterrows():
         c = raw[case_id]
         covariates = dict(case_type=c.case_type, court_station=c.court_station,
@@ -454,8 +454,7 @@ def test_va_model_is_the_fit():
         labels = model.encode_labels(**covariates)
         for label in ('court_station', 'casetype_simplified', 'highcourt', 'courtofappeal'):
             assert labels[label] == row[label], (case_id, label)
-        if row['quasiyear'] < oldest:  # quasiyear_of omits the fit's oldest-bucket merge
-            assert model.quasiyear_of(row['med_appt_date']) == row['quasiyear']
+        assert model.quasiyear_of(row['med_appt_date']) == row['quasiyear']
         predicted = model.predict(**covariates, appt_month=int(row['appt_month']),
                                   quasiyear=int(row['quasiyear']))
         assert predicted == pytest.approx(p_pred[case_id], abs=1e-12), case_id

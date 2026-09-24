@@ -76,6 +76,8 @@ class VAModel:
     small_case_types: FrozenSet[str] = frozenset()
     # Date the fit's quasiyear buckets are counted back from.
     quasiyear_anchor: Optional[datetime] = None
+    # Calendar bucket the fit merged into the one before it (a short oldest bucket).
+    merged_quasiyear: Optional[int] = None
 
     def encode_labels(
         self, *, case_type: str, court_station: str, referral_mode: str, court_type: str,
@@ -99,15 +101,13 @@ class VAModel:
 
     def quasiyear_of(self, appointment_date: Union[date, datetime]) -> int:
         """Quasiyear bucket of an appointment date: 0 = the year ending at the anchor's
-        month-end, 1 = the year before, ... (the fit's rule, without its oldest-bucket merge)."""
+        month-end, 1 = the year before, ... (the fit's rule, including its oldest-bucket merge)."""
         if self.quasiyear_anchor is None:
             raise ValueError("quasiyear_anchor unknown for this model")
-        appointed = pd.Timestamp(appointment_date)
-        for t in range(31):
-            lb, ub = _quasiyear_bounds(self.quasiyear_anchor, t)
-            if lb < appointed <= ub:
-                return t
-        raise ValueError(f"{appointment_date} is outside the quasiyear range of anchor {self.quasiyear_anchor}")
+        t = _calendar_quasiyear(self.quasiyear_anchor, appointment_date)
+        if t is None:
+            raise ValueError(f"{appointment_date} is outside the quasiyear range of anchor {self.quasiyear_anchor}")
+        return t - 1 if t == self.merged_quasiyear else t
 
     def predict(
         self,
@@ -229,6 +229,16 @@ def _quasiyear_bounds(anchor, t: int):
     def month_end(year):
         return datetime(year, anchor.month, calendar.monthrange(year, anchor.month)[1])
     return month_end(anchor.year - t - 1), month_end(anchor.year - t)
+
+
+def _calendar_quasiyear(anchor, appointment_date) -> Optional[int]:
+    """Calendar quasiyear bucket of a date, before the fit's oldest-bucket merge."""
+    appointed = pd.Timestamp(appointment_date)
+    for t in range(31):
+        lb, ub = _quasiyear_bounds(anchor, t)
+        if lb < appointed <= ub:
+            return t
+    return None
 
 
 def _assign_quasiyear(df: pd.DataFrame, reference_date) -> pd.DataFrame:
@@ -465,10 +475,19 @@ def _labeling_from_prepared(prepared: pd.DataFrame) -> Dict:
         prepared['_quasiyear_anchor'].dropna()
         if '_quasiyear_anchor' in prepared.columns else pd.Series(dtype=object)
     )
+    anchor = pd.Timestamp(anchors.iloc[0]).to_pydatetime() if len(anchors) else None
+    # The oldest bucket was merged when its earliest appointment falls a calendar bucket further back.
+    merged_quasiyear = None
+    oldest = prepared['quasiyear'].max() if 'quasiyear' in prepared.columns else np.nan
+    if anchor is not None and pd.notna(oldest):
+        earliest = prepared.loc[prepared['quasiyear'] == oldest, 'med_appt_date'].min()
+        if _calendar_quasiyear(anchor, earliest) == oldest + 1:
+            merged_quasiyear = int(oldest) + 1
     return {
         'small_court_stations': collapsed('court_station', '_court_station_precollapse'),
         'small_case_types': collapsed('casetype_simplified', '_casetype_precollapse'),
-        'quasiyear_anchor': pd.Timestamp(anchors.iloc[0]).to_pydatetime() if len(anchors) else None,
+        'quasiyear_anchor': anchor,
+        'merged_quasiyear': merged_quasiyear,
     }
 
 
@@ -479,6 +498,7 @@ def _fit_and_score(
     small_court_stations: FrozenSet[str] = frozenset(),
     small_case_types: FrozenSet[str] = frozenset(),
     quasiyear_anchor: Optional[datetime] = None,
+    merged_quasiyear: Optional[int] = None,
 ) -> VAEstimationResult:
     """
     Shared core: regression, prediction, and shrinkage over an already-cleaned frame.
@@ -559,6 +579,7 @@ def _fit_and_score(
         small_court_stations=frozenset(small_court_stations),
         small_case_types=frozenset(small_case_types),
         quasiyear_anchor=quasiyear_anchor,
+        merged_quasiyear=merged_quasiyear,
     )
 
     # Handle pending cases (applied to both frames; the fresh-pending drop is df-only

@@ -270,6 +270,8 @@ def test_arrival_pool_keeps_recent_referrals_with_their_covariates():
     assert pool.daily_rate == pytest.approx(2 / 182)
     assert pool.records[0] == {'case_type': "Divorce and Separation", 'court_station': "MILIMANI",
                                'referral_mode': "Referred by Court", 'court_type': "Kadhi Court"}
+    with pytest.raises(ValueError):
+        build_arrival_pool(cases, as_of=date(2025, 12, 29), window_days=0)
 
 
 def test_phantoms_drawn_from_pool_and_scored_by_model():

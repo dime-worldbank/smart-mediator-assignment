@@ -130,6 +130,8 @@ def build_arrival_pool(
     keyed on it) and court type (Kadhi-court eligibility, high court / court of appeal
     covariates) alongside the other covariates the VA model uses.
     """
+    if window_days <= 0:
+        raise ValueError(f"window_days must be positive, got {window_days}")
     end = pd.Timestamp(as_of).normalize()
     start = end - pd.Timedelta(days=window_days)
     records = []
