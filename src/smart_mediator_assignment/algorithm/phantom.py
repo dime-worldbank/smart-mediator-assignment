@@ -1,17 +1,23 @@
 """
 Phantom case generation for look-ahead optimization.
 
-This module generates simulated future cases based on Poisson arrival rates
-to help the LP solver make forward-looking assignment decisions.
+This module generates simulated future cases to help the solver make forward-looking
+assignment decisions. `generate_phantom_cases_from_pool` draws each phantom case's full
+covariate vector from recent real arrivals and scores it with the fitted VA model;
+`generate_phantom_cases` is the earlier per-cell Poisson sampler with averaged p-values.
 """
 
 import random
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 
-from ..core.case import SimpleCase
+from ..core.case import CaseProtocol, SimpleCase
+from ..core.eligibility import MediatorRoster
+from .va_estimation import VAModel
 from ..core.types import (
     AvgCaseRate,
     AvgPValByCrtCaseType,
@@ -94,7 +100,7 @@ def generate_phantom_cases(
                     case_type=case_type,
                     court_station=court_station,
                     referral_date=arrival_date,
-                    p_value=p_val - 0.1,
+                    p_value=p_val,
                 )
 
                 phantom_cases_with_order.append((order_key, phantom_case))
@@ -104,6 +110,100 @@ def generate_phantom_cases(
     phantom_cases = [case for _, case in phantom_cases_with_order]
 
     return phantom_cases, phantom_id
+
+
+@dataclass(frozen=True)
+class ArrivalPool:
+    """Covariate vectors of recent real arrivals, and their daily arrival rate."""
+
+    records: Tuple[Dict[str, str], ...]
+    daily_rate: float
+
+
+def build_arrival_pool(
+    cases: Iterable[CaseProtocol],
+    as_of: Union[date, datetime],
+    window_days: int = 182,
+) -> ArrivalPool:
+    """Pool of cases referred in the `window_days` up to and including `as_of`.
+
+    Arrival is the referral date. Each record keeps the raw case type (eligibility is
+    keyed on it) and court type (Kadhi-court eligibility, high court / court of appeal
+    covariates) alongside the other covariates the VA model uses.
+    """
+    if window_days <= 0:
+        raise ValueError(f"window_days must be positive, got {window_days}")
+    end = pd.Timestamp(as_of).normalize()
+    start = end - pd.Timedelta(days=window_days)
+    records = []
+    for case in cases:
+        if case.referral_date is None or pd.isna(case.referral_date):
+            continue
+        referred = pd.Timestamp(case.referral_date).normalize()
+        if start < referred <= end:
+            records.append({
+                'case_type': case.case_type,
+                'court_station': case.court_station,
+                'referral_mode': getattr(case, 'referral_mode', ''),
+                'court_type': getattr(case, 'court_type', ''),
+            })
+    return ArrivalPool(records=tuple(records), daily_rate=len(records) / window_days)
+
+
+def generate_phantom_cases_from_pool(
+    current_day: Union[date, datetime],
+    time_horizon: int,
+    pool: ArrivalPool,
+    va_model: VAModel,
+    rng: np.random.Generator,
+    starting_id: int = -1,
+    roster: Optional[MediatorRoster] = None,
+) -> Tuple[List[SimpleCase], int]:
+    """Phantom cases for the next `time_horizon` days, drawn from recent arrivals.
+
+    Each day draws a Poisson(`pool.daily_rate`) count, then that many covariate vectors
+    uniformly from the pool, so the mix across court stations, case types and other
+    covariates matches recent arrivals. Each phantom's p_value is the VA model's
+    prediction at its arrival date, undiscounted: the solver already puts real cases
+    first (their assignment must sum to 1, a phantom's only to at most 1).
+
+    With a `roster`, each phantom gets `eligible_mediator_ids` from the eligibility rules on its
+    arrival date (e.g. Kadhi-court cases only to Muslim mediators), uncapped as in the smart
+    algorithm; without one, the solver falls back to its court-station x case-type mapping.
+
+    Returns:
+        Tuple of (list of phantom cases, next available phantom ID)
+    """
+    phantom_id = starting_id
+    phantom_cases = []
+    if not pool.records:
+        return phantom_cases, phantom_id
+
+    for fut_day in range(time_horizon):
+        arrival_date = _add_days(current_day, fut_day)
+        count = rng.poisson(pool.daily_rate)
+        for idx in rng.integers(0, len(pool.records), size=count):
+            record = pool.records[idx]
+            p_val = va_model.predict_arrival(arrival_date=arrival_date, **record)
+            phantom_cases.append(SimpleCase(
+                id=phantom_id,
+                case_type=record['case_type'],
+                court_station=record['court_station'],
+                referral_date=arrival_date,
+                p_value=p_val,
+                court_type=record['court_type'],
+                referral_mode=record['referral_mode'],
+                eligible_mediator_ids=None if roster is None else roster.eligible_ids(
+                    on_date=arrival_date, court_station=record['court_station'],
+                    case_type=record['case_type'], court_type=record['court_type'],
+                ),
+            ))
+            phantom_id -= 1
+
+    # Interleave days and cells like generate_phantom_cases does, so solver input order
+    # doesn't encode arrival day.
+    order = rng.permutation(len(phantom_cases))
+    return [phantom_cases[i] for i in order], phantom_id
 
 
 def _add_days(

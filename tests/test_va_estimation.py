@@ -3,7 +3,7 @@ Tests for VA estimation module.
 """
 
 import pytest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, date
 from typing import Optional, Union
 
@@ -432,6 +432,45 @@ def test_estimate_va_from_prepared_matches_fresh_on_same_window():
     # degenerate single-mediator fixture used elsewhere in this file -- a strong,
     # independent invariant that fresh and reuse agree case-by-case.
     assert reused.get_p_pred_dict() == fresh.get_p_pred_dict()
+
+
+def test_va_model_is_the_fit():
+    """The exposed model must be the fit itself: for every fitted case, encoding its raw
+    covariates gives the fit's labels, quasiyear_of its bucket, and predict its p_pred. The
+    labeling must also survive the pd.concat the RCT simulation uses to append resolved cases."""
+    cases = generate_synthetic_cases(n_cases=1000, n_mediators=30, seed=42)
+    cases += [replace(cases[i], id=5000 + i, court_station="TINY") for i in range(5)]  # collapses to zzzSmall
+    cfg = VAEstimationConfig(reference_date=datetime(2023, 6, 1))
+    result = estimate_va(cases, config=cfg, start_date="2019-01-01", end_date="2023-06-01")
+    model, fitted, p_pred = result.model, result.prepared.set_index('id'), result.get_p_pred_dict()
+    raw = {c.id: c for c in cases}
+    assert model.small_court_stations == {"TINY"}
+
+    assert model.merged_quasiyear == fitted['quasiyear'].max() + 1  # the data's oldest bucket is short
+    for case_id, row in fitted.iterrows():
+        c = raw[case_id]
+        covariates = dict(case_type=c.case_type, court_station=c.court_station,
+                          referral_mode=c.referral_mode, court_type=c.court_type)
+        labels = model.encode_labels(**covariates)
+        for label in ('court_station', 'casetype_simplified', 'highcourt', 'courtofappeal'):
+            assert labels[label] == row[label], (case_id, label)
+        assert model.quasiyear_of(row['med_appt_date']) == row['quasiyear']
+        predicted = model.predict(**covariates, appt_month=int(row['appt_month']),
+                                  quasiyear=int(row['quasiyear']))
+        assert predicted == pytest.approx(p_pred[case_id], abs=1e-12), case_id
+
+    # a time of day doesn't move a month-end appointment out of its bucket
+    assert model.quasiyear_of(datetime(2022, 6, 30, 12)) == model.quasiyear_of(datetime(2022, 6, 30))
+
+    # a station the fit never saw has no coefficient, i.e. the MILIMANI reference
+    base = dict(case_type="Civil Cases", referral_mode="Referred by Court",
+                court_type="Magistrate Court", appt_month=3)
+    assert model.predict(court_station="NEVER_SEEN", **base) == model.predict(court_station="MILIMANI", **base)
+
+    appended = pd.concat([result.prepared, result.prepared.head(1).assign(id=99999)], ignore_index=True)
+    refit = estimate_va_from_prepared(appended, config=cfg, start_date="2019-01-01", end_date="2023-06-01")
+    assert refit.model.small_court_stations == {"TINY"}
+    assert refit.model.quasiyear_anchor == model.quasiyear_anchor == datetime(2023, 6, 1)
 
 
 if __name__ == "__main__":

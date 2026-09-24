@@ -1,6 +1,7 @@
 from .case import CaseProtocol, SimpleCase
 from .mediator import MediatorProtocol, SimpleMediator
 from .belief import MediatorBelief, BeliefState
+from .eligibility import AssignmentIssue, MediatorProfile, MediatorRoster
 from .types import (
     MediatorId,
     CaseId,
@@ -23,6 +24,9 @@ __all__ = [
     "SimpleMediator",
     "MediatorBelief",
     "BeliefState",
+    "AssignmentIssue",
+    "MediatorProfile",
+    "MediatorRoster",
     "MediatorId",
     "CaseId",
     "CourtStationId",
