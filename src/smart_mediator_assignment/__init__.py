@@ -20,11 +20,15 @@ from .algorithm import (
     update_belief,
     update_belief_batch,
     generate_phantom_cases,
+    ArrivalPool,
+    build_arrival_pool,
+    generate_phantom_cases_from_pool,
     get_strategy,
     VAEstimationConfig,
     MediatorVAEstimate,
     CasePrediction,
     VAEstimationResult,
+    VAModel,
     estimate_va,
     estimate_va_from_prepared,
     estimate_lognormal_duration_params,
@@ -39,7 +43,7 @@ from .assignment import (
     get_recommendations_batch,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Config
@@ -60,12 +64,16 @@ __all__ = [
     "update_belief",
     "update_belief_batch",
     "generate_phantom_cases",
+    "ArrivalPool",
+    "build_arrival_pool",
+    "generate_phantom_cases_from_pool",
     "get_strategy",
     # Algorithm - VA Estimation
     "VAEstimationConfig",
     "MediatorVAEstimate",
     "CasePrediction",
     "VAEstimationResult",
+    "VAModel",
     "estimate_va",
     "estimate_va_from_prepared",
     # Case-type taxonomy (shared by VA + duration)

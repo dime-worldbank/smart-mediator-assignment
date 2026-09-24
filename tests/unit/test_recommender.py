@@ -418,3 +418,52 @@ class TestUseQPPath:
         assert set(results) == {1, 2, 3}
         for case_id in (1, 2, 3):
             assert results[case_id].case_id == case_id
+
+
+class TestBatchPreGeneratedPhantoms:
+    """get_recommendations_batch uses caller-supplied phantom cases instead of generating its own."""
+
+    def _call(self, monkeypatch, phantom_cases):
+        from smart_mediator_assignment.assignment import recommender
+        from smart_mediator_assignment.solver import LPSolver
+
+        seen = {}
+        original_solve = LPSolver.solve
+
+        def spy_solve(self, cases, phantom_cases=None, current_day=None):
+            seen['phantoms'] = phantom_cases
+            return original_solve(self, cases, phantom_cases=phantom_cases, current_day=current_day)
+
+        def no_generation(**kwargs):
+            raise AssertionError("built-in phantom generation should not run")
+
+        monkeypatch.setattr(LPSolver, "solve", spy_solve)
+        monkeypatch.setattr(recommender, "generate_phantom_cases", no_generation)
+        case = SimpleCase(id=1, case_type="Family group", court_station="KAKAMEGA",
+                          referral_date=date(2023, 1, 1), p_value=0.5)
+        results = get_recommendations_batch(
+            cases=[case],
+            eligible_mediator_ids=SCENARIO1_VALID_MEDS,
+            mediator_case_loads={1: 0, 2: 0, 3: 0},
+            belief_state=make_belief_state(SCENARIO1_MED_VA),
+            med_by_court_case_type=SCENARIO1_MED_BY_CRT_CASE_TYPE,
+            config=AlgorithmConfig(capacity=3, lambda_penalty=1.0, time_horizon=10),
+            avg_case_rate=SCENARIO1_AVG_CASE_RATE,
+            avg_p_val_by_crt_case_type=SCENARIO1_AVG_P_VAL,
+            court_stations=["MILIMANI", "KAKAMEGA"],
+            case_types=["Family group"],
+            current_day=date(2023, 1, 1),
+            phantom_cases=phantom_cases,
+        )
+        return results, seen['phantoms']
+
+    def test_supplied_phantoms_are_passed_to_solver(self, monkeypatch):
+        phantom = SimpleCase(id=-1, case_type="Family group", court_station="KAKAMEGA",
+                             referral_date=date(2023, 1, 2), p_value=0.4)
+        results, passed = self._call(monkeypatch, [phantom])
+        assert passed == [phantom]
+        assert 1 in results
+
+    def test_empty_supplied_list_means_no_phantoms(self, monkeypatch):
+        _, passed = self._call(monkeypatch, [])
+        assert passed == []

@@ -155,6 +155,7 @@ def get_recommendations_batch(
     ground_truth_vas: Optional[MediatorVAs] = None,
     generate_phantoms: bool = True,
     seed: Optional[int] = None,
+    phantom_cases: Optional[List[CaseProtocol]] = None,
 ) -> Dict[CaseId, RecommendationResult]:
     """
     Get mediator recommendations for multiple cases at once.
@@ -178,6 +179,9 @@ def get_recommendations_batch(
         ground_truth_vas: Ground truth VAs (for 'ground' strategy)
         generate_phantoms: Whether to generate phantom cases
         seed: Random seed for phantom generation
+        phantom_cases: Pre-generated phantom cases (e.g. from
+            generate_phantom_cases_from_pool); when given, used as-is instead of
+            generating them here
 
     Returns:
         Dictionary mapping case_id -> RecommendationResult
@@ -197,19 +201,20 @@ def get_recommendations_batch(
         if mid in va_estimates
     }
 
-    phantom_cases = []
-    if generate_phantoms and avg_case_rate and court_stations and case_types:
-        phantom_cases, _ = generate_phantom_cases(
-            current_day=current_day,
-            time_horizon=config.time_horizon,
-            avg_case_rate=avg_case_rate,
-            avg_p_val_by_crt_case_type=avg_p_val_by_crt_case_type or {},
-            med_by_court_case_type=med_by_court_case_type,
-            court_stations=court_stations,
-            case_types=case_types,
-            starting_id=-1,
-            seed=seed,
-        )
+    if phantom_cases is None:
+        phantom_cases = []
+        if generate_phantoms and avg_case_rate and court_stations and case_types:
+            phantom_cases, _ = generate_phantom_cases(
+                current_day=current_day,
+                time_horizon=config.time_horizon,
+                avg_case_rate=avg_case_rate,
+                avg_p_val_by_crt_case_type=avg_p_val_by_crt_case_type or {},
+                med_by_court_case_type=med_by_court_case_type,
+                court_stations=court_stations,
+                case_types=case_types,
+                starting_id=-1,
+                seed=seed,
+            )
 
     solver_cls = _select_solver_cls(config)
     solver = solver_cls(

@@ -103,6 +103,45 @@ results = get_recommendations_batch(
 )
 ```
 
+### Per-case Eligibility
+
+By default a case may go to any mediator listed for its court station and case type in
+`med_by_court_case_type`. Set `eligible_mediator_ids` on a case to replace that lookup for the
+case — e.g. to exclude mediators who already declined it, or to apply rules the mapping can't
+express (Kadhi-court religion, unavailability on the date). The list is still restricted to
+the solver's `valid_mediators`.
+
+```python
+case = SimpleCase(id=42, case_type="Civil Cases", court_station="MILIMANI",
+                  referral_date=today, p_value=0.55, eligible_mediator_ids=[3, 7, 12])
+```
+
+### Phantom Cases from Recent Arrivals
+
+Phantom (future) cases can be drawn from recent real arrivals and scored with the fitted VA
+model, so their mix of court stations, case types and other covariates — and their predicted
+agreement probability — matches recent cases:
+
+```python
+import numpy as np
+from smart_mediator_assignment import build_arrival_pool, generate_phantom_cases_from_pool
+
+pool = build_arrival_pool(recent_cases, as_of=today, window_days=182)
+phantoms, next_id = generate_phantom_cases_from_pool(
+    current_day=today,
+    time_horizon=config.time_horizon,
+    pool=pool,
+    va_model=va_result.model,      # from estimate_va
+    rng=np.random.default_rng(seed),
+    discount=0.1,                  # subtracted from each phantom's predicted p
+)
+results = get_recommendations_batch(..., phantom_cases=phantoms)
+```
+
+Each day draws a Poisson(`pool.daily_rate`) number of arrivals, then that many covariate vectors
+uniformly from the pool. `va_result.model.predict(...)` scores a case at the phantom's arrival
+month and the most recent quasiyear.
+
 ### VA Estimation (Batch)
 
 Estimate mediator Value Added from historical case data using absorbing regression with shrinkage:
@@ -145,6 +184,11 @@ for med in result.mediator_vas:
 # Case-level predictions
 for case in result.case_predictions:
     print(f"Case {case.case_id}: p_pred={case.p_pred:.4f}")
+
+# The fitted model predicts p_pred for cases outside the fitted data
+p = result.model.predict(case_type="Civil Cases", court_station="MILIMANI",
+                         referral_mode="Referred by Court", court_type="Magistrate Court",
+                         appt_month=3, quasiyear=0)
 ```
 
 `estimate_va` always populates `result.prepared` with the cleaned, collapsed frame it fit

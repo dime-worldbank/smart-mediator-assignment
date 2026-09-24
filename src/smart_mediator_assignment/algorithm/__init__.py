@@ -1,5 +1,11 @@
 from .bayesian import compute_posterior, update_belief, update_belief_batch
-from .phantom import generate_phantom_cases, estimate_case_arrivals
+from .phantom import (
+    generate_phantom_cases,
+    estimate_case_arrivals,
+    ArrivalPool,
+    build_arrival_pool,
+    generate_phantom_cases_from_pool,
+)
 from .strategies import (
     VAStrategy,
     MeanStrategy,
@@ -12,6 +18,7 @@ from .va_estimation import (
     MediatorVAEstimate,
     CasePrediction,
     VAEstimationResult,
+    VAModel,
     estimate_va,
     estimate_va_from_prepared,
 )
@@ -29,6 +36,9 @@ __all__ = [
     "update_belief",
     "update_belief_batch",
     "generate_phantom_cases",
+    "ArrivalPool",
+    "build_arrival_pool",
+    "generate_phantom_cases_from_pool",
     "estimate_case_arrivals",
     "VAStrategy",
     "MeanStrategy",
@@ -39,6 +49,7 @@ __all__ = [
     "MediatorVAEstimate",
     "CasePrediction",
     "VAEstimationResult",
+    "VAModel",
     "estimate_va",
     "estimate_va_from_prepared",
     # Case-type taxonomy (shared by VA + duration)
