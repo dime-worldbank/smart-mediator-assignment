@@ -111,6 +111,9 @@ e.g. to exclude mediators who already declined it. It is still restricted to `va
 ### Phantom Cases from Recent Arrivals
 
 ```python
+import numpy as np
+from smart_mediator_assignment import build_arrival_pool, generate_phantom_cases_from_pool
+
 pool = build_arrival_pool(recent_cases, as_of=today, window_days=182)
 phantoms, _ = generate_phantom_cases_from_pool(
     current_day=today, time_horizon=config.time_horizon, pool=pool,
