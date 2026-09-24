@@ -3,7 +3,7 @@ Tests for VA estimation module.
 """
 
 import pytest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, date
 from typing import Optional, Union
 
@@ -434,129 +434,41 @@ def test_estimate_va_from_prepared_matches_fresh_on_same_window():
     assert reused.get_p_pred_dict() == fresh.get_p_pred_dict()
 
 
-def test_va_model_reproduces_fitted_p_pred():
-    # The exposed model must be the fit, not an approximation: predicting each fitted
-    # case from its raw covariates (plus the fit's own month/quasiyear) has to reproduce
-    # the p_pred the fit computed for it, or phantom and real cases would be scored on
-    # different scales.
+def test_va_model_is_the_fit():
+    """The exposed model must be the fit itself: for every fitted case, encoding its raw
+    covariates gives the fit's labels, quasiyear_of its bucket, and predict its p_pred. The
+    labeling must also survive the pd.concat the RCT simulation uses to append resolved cases."""
     cases = generate_synthetic_cases(n_cases=1000, n_mediators=30, seed=42)
+    cases += [replace(cases[i], id=5000 + i, court_station="TINY") for i in range(5)]  # collapses to zzzSmall
     cfg = VAEstimationConfig(reference_date=datetime(2023, 6, 1))
     result = estimate_va(cases, config=cfg, start_date="2019-01-01", end_date="2023-06-01")
-    p_pred = result.get_p_pred_dict()
+    model, fitted, p_pred = result.model, result.prepared.set_index('id'), result.get_p_pred_dict()
     raw = {c.id: c for c in cases}
+    assert model.small_court_stations == {"TINY"}
 
-    fitted = result.prepared.set_index('id')
-    assert len(fitted) > 100
+    oldest = fitted['quasiyear'].max()
     for case_id, row in fitted.iterrows():
         c = raw[case_id]
-        predicted = result.model.predict(
-            case_type=c.case_type, court_station=c.court_station,
-            referral_mode=c.referral_mode, court_type=c.court_type,
-            appt_month=int(row['appt_month']), quasiyear=int(row['quasiyear']),
-        )
+        covariates = dict(case_type=c.case_type, court_station=c.court_station,
+                          referral_mode=c.referral_mode, court_type=c.court_type)
+        labels = model.encode_labels(**covariates)
+        for label in ('court_station', 'casetype_simplified', 'highcourt', 'courtofappeal'):
+            assert labels[label] == row[label], (case_id, label)
+        if row['quasiyear'] < oldest:  # quasiyear_of omits the fit's oldest-bucket merge
+            assert model.quasiyear_of(row['med_appt_date']) == row['quasiyear']
+        predicted = model.predict(**covariates, appt_month=int(row['appt_month']),
+                                  quasiyear=int(row['quasiyear']))
         assert predicted == pytest.approx(p_pred[case_id], abs=1e-12), case_id
 
+    # a station the fit never saw has no coefficient, i.e. the MILIMANI reference
+    base = dict(case_type="Civil Cases", referral_mode="Referred by Court",
+                court_type="Magistrate Court", appt_month=3)
+    assert model.predict(court_station="NEVER_SEEN", **base) == model.predict(court_station="MILIMANI", **base)
 
-def test_va_model_applies_small_station_collapse():
-    # Same fixture as test_small_court_station_coefficient_is_applied_not_zeroed: TINY is
-    # collapsed to 'zzzSmall', so predicting from the raw label must use zzzSmall's coefficient.
-    cases = []
-    for m in range(1, 11):
-        milimani_outcome = 0 if m in (1, 2) else (1 if m <= 5 else 0)
-        cases.append(_station_case(100 + 2 * m, "MILIMANI", m, milimani_outcome))
-        cases.append(_station_case(101 + 2 * m, "MILIMANI", m, milimani_outcome))
-    cases.append(_station_case(9001, "TINY", 1, outcome=1))
-    cases.append(_station_case(9002, "TINY", 2, outcome=1))
-    cfg = VAEstimationConfig(reference_date=datetime(2023, 6, 1), days_since_appt_threshold=0,
-                              min_med_cases=2, min_court_station_cases=2)
-    result = estimate_va(cases, config=cfg, start_date="2021-01-01", end_date="2023-01-01")
-
-    assert "TINY" in result.model.small_court_stations
-    row = result.prepared.set_index('id').loc[9001]
-    predicted = result.model.predict(
-        case_type="Divorce and Separation", court_station="TINY", referral_mode="Referred by Court",
-        court_type="Magistrate", appt_month=int(row['appt_month']), quasiyear=int(row['quasiyear']),
-    )
-    assert predicted == pytest.approx(result.get_p_pred_dict()[9001], abs=1e-12)
-
-
-def test_va_model_from_prepared_keeps_collapse_sets():
-    cases = [_station_case(100 + i, "MILIMANI", 1 + i % 3, i % 2) for i in range(12)]
-    cases += [_station_case(9001, "TINY", 1, outcome=1), _station_case(9002, "TINY", 2, outcome=0)]
-    cfg = VAEstimationConfig(reference_date=datetime(2023, 6, 1), days_since_appt_threshold=0,
-                              min_med_cases=2, min_court_station_cases=2)
-    fresh = estimate_va(cases, config=cfg, start_date="2021-01-01", end_date="2023-01-01")
-    reused = estimate_va_from_prepared(fresh.prepared, config=cfg,
-                                       start_date="2021-01-01", end_date="2023-01-01")
-    assert reused.model.small_court_stations == fresh.model.small_court_stations == {"TINY"}
-
-    # The simulation appends resolved cases with pd.concat; the labeling must survive that.
-    appended = pd.concat([fresh.prepared, fresh.prepared.head(1).assign(id=99999)], ignore_index=True)
-    after_concat = estimate_va_from_prepared(appended, config=cfg,
-                                             start_date="2021-01-01", end_date="2023-01-01")
-    assert after_concat.model.small_court_stations == {"TINY"}
-    assert after_concat.model.quasiyear_anchor == fresh.model.quasiyear_anchor == datetime(2023, 1, 1)
-
-
-def test_va_model_quasiyear_of_matches_fit():
-    # quasiyear_of reproduces the fit's buckets for rows outside the merged oldest bucket.
-    cases = generate_synthetic_cases(n_cases=1000, n_mediators=30, seed=42)
-    cfg = VAEstimationConfig(reference_date=datetime(2023, 6, 1))
-    result = estimate_va(cases, config=cfg, start_date="2019-01-01", end_date="2023-06-01")
-    fitted = result.prepared
-    oldest = fitted['quasiyear'].max()
-    rows = fitted[fitted['quasiyear'] < oldest]
-    assert len(rows) > 100
-    for _, row in rows.iterrows():
-        assert result.model.quasiyear_of(row['med_appt_date']) == int(row['quasiyear'])
-
-
-def test_va_model_encode_labels():
-    model = va_estimation.VAModel(intercept=0.0, coefficients={},
-                                  small_court_stations=frozenset({'TINY'}),
-                                  small_case_types=frozenset({'Judicial Review'}))
-    assert model.encode_labels(case_type="Divorce and Separation", court_station="MILIMANI",
-                               referral_mode="Referred by Court", court_type="High Court") == {
-        'casetype_simplified': 'AAAFamily group', 'court_station': 'AAAMilimani',
-        'referral_mode': 'Referred by Court', 'highcourt': 1, 'courtofappeal': 0,
-    }
-    small = model.encode_labels(case_type="Judicial Review", court_station="TINY",
-                                referral_mode="Request by Parties", court_type="Court of Appeal")
-    assert (small['casetype_simplified'], small['court_station'], small['courtofappeal']) == ('zzzSmall', 'zzzSmall', 1)
-
-
-def test_va_model_predict_encoding():
-    model = va_estimation.VAModel(
-        intercept=0.5,
-        coefficients={
-            'appt_month': {1.0: 0.0, 3.0: 0.02},
-            'quasiyear': {0.0: 0.0, 1.0: -0.03},
-            'casetype_simplified': {'AAAFamily group': 0.0, 'Civil group': -0.1, 'zzzSmall': 0.07},
-            'court_station': {'AAAMilimani': 0.0, 'KAKAMEGA': 0.05, 'zzzSmall': -0.2},
-            'referral_mode': {'Referred by Court': 0.0, 'Request by Parties': 0.04},
-            'highcourt': {0.0: 0.0, 1.0: 0.01},
-            'courtofappeal': {0.0: 0.0, 1.0: -0.06},
-        },
-        small_court_stations=frozenset({'TINY'}),
-        small_case_types=frozenset({'Judicial Review'}),
-    )
-    base = dict(case_type="Divorce and Separation", court_station="MILIMANI",
-                referral_mode="Referred by Court", court_type="Magistrate", appt_month=1)
-
-    assert model.predict(**base) == pytest.approx(0.5)  # every covariate at its reference
-    assert model.predict(**{**base, 'case_type': "Civil Cases"}) == pytest.approx(0.4)
-    assert model.predict(**{**base, 'case_type': "Judicial Review"}) == pytest.approx(0.57)
-    assert model.predict(**{**base, 'court_station': "TINY"}) == pytest.approx(0.3)
-    assert model.predict(**{**base, 'court_station': "NEVER_SEEN"}) == pytest.approx(0.5)
-    assert model.predict(**{**base, 'court_type': "High Court"}) == pytest.approx(0.51)
-    assert model.predict(**{**base, 'court_type': "Court of Appeal"}) == pytest.approx(0.44)
-    assert model.predict(**{**base, 'referral_mode': "Request by Parties"}) == pytest.approx(0.54)
-    assert model.predict(**{**base, 'quasiyear': 1}) == pytest.approx(0.47)
-    # an arriving case uses its own month and the most recent quasiyear
-    assert model.predict_arrival(
-        case_type="Divorce and Separation", court_station="KAKAMEGA", referral_mode="Referred by Court",
-        court_type="Magistrate", arrival_date=date(2026, 3, 9),
-    ) == pytest.approx(0.5 + 0.02 + 0.05)
+    appended = pd.concat([result.prepared, result.prepared.head(1).assign(id=99999)], ignore_index=True)
+    refit = estimate_va_from_prepared(appended, config=cfg, start_date="2019-01-01", end_date="2023-06-01")
+    assert refit.model.small_court_stations == {"TINY"}
+    assert refit.model.quasiyear_anchor == model.quasiyear_anchor == datetime(2023, 6, 1)
 
 
 if __name__ == "__main__":

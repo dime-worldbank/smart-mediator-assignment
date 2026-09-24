@@ -103,11 +103,8 @@ class VAModel:
         if self.quasiyear_anchor is None:
             raise ValueError("quasiyear_anchor unknown for this model")
         appointed = pd.Timestamp(appointment_date)
-        ref_month, ref_year = self.quasiyear_anchor.month, self.quasiyear_anchor.year
         for t in range(31):
-            yu, yl = ref_year - t, ref_year - t - 1
-            ub = datetime(yu, ref_month, calendar.monthrange(yu, ref_month)[1])
-            lb = datetime(yl, ref_month, calendar.monthrange(yl, ref_month)[1])
+            lb, ub = _quasiyear_bounds(self.quasiyear_anchor, t)
             if lb < appointed <= ub:
                 return t
         raise ValueError(f"{appointment_date} is outside the quasiyear range of anchor {self.quasiyear_anchor}")
@@ -226,6 +223,14 @@ def _simplify_case_types(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _quasiyear_bounds(anchor, t: int):
+    """(lower, upper] bounds of quasiyear bucket t: the year ending at the anchor month's
+    month-end, t years back."""
+    def month_end(year):
+        return datetime(year, anchor.month, calendar.monthrange(year, anchor.month)[1])
+    return month_end(anchor.year - t - 1), month_end(anchor.year - t)
+
+
 def _assign_quasiyear(df: pd.DataFrame, reference_date) -> pd.DataFrame:
     """Assign quasiyear and appt_month columns to cases based on appointment date.
 
@@ -243,12 +248,8 @@ def _assign_quasiyear(df: pd.DataFrame, reference_date) -> pd.DataFrame:
     df = df.copy()
     df['appt_month'] = df['med_appt_date'].dt.month
     df['quasiyear'] = np.nan
-    ref_month, ref_year = reference_date.month, reference_date.year
     for t in range(31):
-        yu = ref_year - t
-        ub = datetime(yu, ref_month, calendar.monthrange(yu, ref_month)[1])
-        yl = ref_year - t - 1
-        lb = datetime(yl, ref_month, calendar.monthrange(yl, ref_month)[1])
+        lb, ub = _quasiyear_bounds(reference_date, t)
         df.loc[(df['med_appt_date'] <= ub) & (df['med_appt_date'] > lb), 'quasiyear'] = t
     # collapse the oldest bucket into the previous one when it spans < 1 year
     oldest_qy = df['quasiyear'].max()

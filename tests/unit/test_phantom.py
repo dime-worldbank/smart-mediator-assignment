@@ -242,6 +242,7 @@ class TestEstimateCaseArrivals:
         assert len(estimates) == 0
 
 
+
 from collections import Counter
 
 from smart_mediator_assignment.algorithm.phantom import (
@@ -252,106 +253,62 @@ from smart_mediator_assignment.algorithm.phantom import (
 from smart_mediator_assignment.algorithm.va_estimation import VAModel
 from smart_mediator_assignment.core import SimpleCase
 
-_MODEL = VAModel(
-    intercept=0.5,
-    coefficients={
-        'appt_month': {1.0: 0.0, 3.0: 0.02},
-        'court_station': {'AAAMilimani': 0.0, 'KAKAMEGA': 0.05},
-        'referral_mode': {'Referred by Court': 0.0, 'Request by Parties': 0.04},
-        'highcourt': {0.0: 0.0, 1.0: 0.01},
-    },
-)
+
+def test_arrival_pool_keeps_recent_referrals_with_their_covariates():
+    def arrival(case_id, referred, court_type="Magistrate Court"):
+        return SimpleCase(id=case_id, case_type="Divorce and Separation", court_station="MILIMANI",
+                          referral_date=referred, referral_mode="Referred by Court", court_type=court_type)
+
+    cases = [
+        arrival(1, date(2025, 6, 30)),                        # exactly window_days back: excluded
+        arrival(2, date(2025, 7, 1), court_type="Kadhi Court"),
+        arrival(3, date(2025, 12, 29)),                       # on as_of: included
+        arrival(4, date(2025, 12, 30)),                       # after as_of: excluded
+        SimpleCase(id=5, case_type="Civil Cases", court_station="MILIMANI", referral_date=None),
+    ]
+    pool = build_arrival_pool(cases, as_of=date(2025, 12, 29), window_days=182)
+    assert pool.daily_rate == pytest.approx(2 / 182)
+    assert pool.records[0] == {'case_type': "Divorce and Separation", 'court_station': "MILIMANI",
+                               'referral_mode': "Referred by Court", 'court_type': "Kadhi Court"}
 
 
-def _arrival(case_id, referred, station="MILIMANI", referral_mode="Referred by Court",
-             court_type="Magistrate Court", case_type="Divorce and Separation"):
-    return SimpleCase(id=case_id, case_type=case_type, court_station=station,
-                      referral_date=referred, referral_mode=referral_mode, court_type=court_type)
+def test_phantoms_drawn_from_pool_and_scored_by_model():
+    model = VAModel(intercept=0.5, coefficients={
+        'appt_month': {3.0: 0.02},
+        'court_station': {'KAKAMEGA': 0.05},
+        'referral_mode': {'Request by Parties': 0.04},
+        'highcourt': {1.0: 0.01},
+    })
+    kakamega = {'case_type': "Divorce and Separation", 'court_station': "KAKAMEGA",
+                'referral_mode': "Request by Parties", 'court_type': "High Court"}
+    milimani = {'case_type': "Civil Cases", 'court_station': "MILIMANI",
+                'referral_mode': "Referred by Court", 'court_type': "Magistrate Court"}
+    pool = ArrivalPool(records=(kakamega, milimani, milimani, milimani), daily_rate=20.0)
+    start = date(2026, 3, 9)
 
-
-class TestBuildArrivalPool:
-    def test_keeps_only_the_window_up_to_as_of(self):
-        cases = [
-            _arrival(1, date(2025, 6, 30)),    # exactly window_days before as_of: excluded
-            _arrival(2, date(2025, 7, 1)),
-            _arrival(3, date(2025, 12, 29)),   # on as_of: included
-            _arrival(4, date(2025, 12, 30)),   # after as_of: excluded
-            SimpleCase(id=5, case_type="Civil Cases", court_station="MILIMANI", referral_date=None),
-        ]
-        pool = build_arrival_pool(cases, as_of=date(2025, 12, 29), window_days=182)
-        assert len(pool.records) == 2
-        assert pool.daily_rate == pytest.approx(2 / 182)
-
-    def test_record_keeps_raw_case_type_and_court_type(self):
-        pool = build_arrival_pool([_arrival(1, date(2025, 12, 1), court_type="Kadhi Court")],
-                                  as_of=date(2025, 12, 29))
-        assert pool.records[0] == {
-            'case_type': "Divorce and Separation", 'court_station': "MILIMANI",
-            'referral_mode': "Referred by Court", 'court_type': "Kadhi Court",
-        }
-
-
-class TestGeneratePhantomCasesFromPool:
-    _POOL = ArrivalPool(
-        records=(
-            {'case_type': "Divorce and Separation", 'court_station': "KAKAMEGA",
-             'referral_mode': "Request by Parties", 'court_type': "High Court"},
-        ),
-        daily_rate=2.0,
-    )
-
-    def _generate(self, seed=7, **kwargs):
-        args = dict(current_day=date(2026, 3, 9), time_horizon=10, pool=self._POOL,
-                    va_model=_MODEL, rng=np.random.default_rng(seed))
+    def generate(seed=7, discount=0.1, **kwargs):
+        args = dict(current_day=start, time_horizon=10, pool=pool, va_model=model,
+                    rng=np.random.default_rng(seed), starting_id=-5, discount=discount)
         args.update(kwargs)
         return generate_phantom_cases_from_pool(**args)
 
-    def test_phantoms_carry_drawn_covariates_and_model_p_value(self):
-        phantoms, _ = self._generate()
-        assert phantoms
-        for p in phantoms:
-            assert p.case_type == "Divorce and Separation"      # raw type, for eligibility
-            assert p.court_type == "High Court"
-            assert p.referral_mode == "Request by Parties"
-            month_coef = 0.02 if p.referral_date.month == 3 else 0.0
-            expected = 0.5 + month_coef + 0.05 + 0.04 + 0.01 - 0.1
-            assert p.p_value == pytest.approx(expected)
+    phantoms, next_id = generate()
+    assert len(phantoms) > 100
+    for p in phantoms:
+        record = kakamega if p.court_station == "KAKAMEGA" else milimani
+        # full drawn covariate vector kept, raw case type included (eligibility is keyed on it)
+        assert (p.case_type, p.referral_mode, p.court_type) == (
+            record['case_type'], record['referral_mode'], record['court_type'])
+        assert 0 <= (p.referral_date - start).days < 10
+        month = 0.02 if p.referral_date.month == 3 else 0.0
+        station_etc = 0.05 + 0.04 + 0.01 if record is kakamega else 0.0
+        assert p.p_value == pytest.approx(0.5 + month + station_etc - 0.1)
 
-    def test_discount_is_a_parameter(self):
-        undiscounted, _ = self._generate(discount=0.0)
-        discounted, _ = self._generate(discount=0.1)
-        assert [p.p_value - 0.1 for p in undiscounted] == pytest.approx([p.p_value for p in discounted])
-
-    def test_ids_negative_unique_and_next_id_returned(self):
-        phantoms, next_id = self._generate(starting_id=-5)
-        ids = [p.id for p in phantoms]
-        assert all(i <= -5 for i in ids) and len(set(ids)) == len(ids)
-        assert next_id == -5 - len(ids)
-
-    def test_arrivals_within_horizon(self):
-        phantoms, _ = self._generate()
-        days = {(p.referral_date - date(2026, 3, 9)).days for p in phantoms}
-        assert days <= set(range(10))
-
-    def test_reproducible_with_same_rng_seed(self):
-        a, _ = self._generate(seed=11)
-        b, _ = self._generate(seed=11)
-        assert [(p.id, p.referral_date, p.p_value) for p in a] == [(p.id, p.referral_date, p.p_value) for p in b]
-
-    def test_mix_follows_pool_shares(self):
-        pool = ArrivalPool(
-            records=tuple(
-                [{'case_type': "Civil Cases", 'court_station': "MILIMANI",
-                  'referral_mode': "Referred by Court", 'court_type': "Magistrate Court"}] * 3
-                + [{'case_type': "Civil Cases", 'court_station': "KAKAMEGA",
-                    'referral_mode': "Referred by Court", 'court_type': "Magistrate Court"}]
-            ),
-            daily_rate=50.0,
-        )
-        phantoms, _ = self._generate(pool=pool, time_horizon=40)
-        share = Counter(p.court_station for p in phantoms)["MILIMANI"] / len(phantoms)
-        assert share == pytest.approx(0.75, abs=0.03)
-
-    def test_empty_pool_gives_no_phantoms(self):
-        phantoms, next_id = self._generate(pool=ArrivalPool(records=(), daily_rate=0.0))
-        assert phantoms == [] and next_id == -1
+    ids = [p.id for p in phantoms]
+    assert len(set(ids)) == len(ids) and max(ids) == -5 and next_id == -5 - len(ids)
+    # the mix follows the pool's shares
+    assert Counter(p.court_station for p in phantoms)["MILIMANI"] / len(phantoms) == pytest.approx(0.75, abs=0.05)
+    # reproducible from the rng seed; discount is a plain subtraction
+    undiscounted, _ = generate(discount=0.0)
+    assert [p.p_value - 0.1 for p in undiscounted] == pytest.approx([p.p_value for p in phantoms])
+    assert generate(pool=ArrivalPool(records=(), daily_rate=0.0)) == ([], -5)
