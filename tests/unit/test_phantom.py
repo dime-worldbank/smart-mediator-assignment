@@ -159,7 +159,7 @@ class TestGeneratePhantomCases:
         )
 
         for case in phantom_cases:
-            assert case.p_value == pytest.approx(0.4, abs=0.01)
+            assert case.p_value == pytest.approx(0.5, abs=0.01)
 
     def test_datetime_support(self):
         """Test that datetime objects work as well as date objects."""

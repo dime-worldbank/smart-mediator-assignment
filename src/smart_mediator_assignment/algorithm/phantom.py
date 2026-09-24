@@ -99,7 +99,7 @@ def generate_phantom_cases(
                     case_type=case_type,
                     court_station=court_station,
                     referral_date=arrival_date,
-                    p_value=p_val - 0.1,
+                    p_value=p_val,
                 )
 
                 phantom_cases_with_order.append((order_key, phantom_case))
