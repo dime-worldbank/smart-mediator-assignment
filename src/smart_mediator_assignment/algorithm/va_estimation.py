@@ -70,9 +70,47 @@ class VAModel:
     # covariate -> {model-space level: coefficient}; levels absent from a table
     # contribute 0, as omitted/unmatched levels do in the fit's skipna sum.
     coefficients: Dict[str, Dict]
-    # Raw labels collapsed to 'zzzSmall' by the fit's small-group rule.
+    # Labels collapsed to 'zzzSmall' by the fit's small-group rule (after the
+    # MILIMANI -> AAAMilimani and case-type simplification relabels).
     small_court_stations: FrozenSet[str] = frozenset()
     small_case_types: FrozenSet[str] = frozenset()
+    # Date the fit's quasiyear buckets are counted back from.
+    quasiyear_anchor: Optional[datetime] = None
+
+    def encode_labels(
+        self, *, case_type: str, court_station: str, referral_mode: str, court_type: str,
+    ) -> Dict:
+        """Raw case covariates -> the labels the fit uses (same relabels and collapses)."""
+        casetype = simplify_case_types(
+            pd.Series([case_type]), family_group_label='AAAFamily group'
+        ).iloc[0]
+        if casetype in self.small_case_types:
+            casetype = 'zzzSmall'
+        station = 'AAAMilimani' if court_station == 'MILIMANI' else court_station
+        if station in self.small_court_stations:
+            station = 'zzzSmall'
+        return {
+            'casetype_simplified': casetype,
+            'court_station': station,
+            'referral_mode': referral_mode,
+            'highcourt': int(court_type == 'High Court'),
+            'courtofappeal': int(court_type == 'Court of Appeal'),
+        }
+
+    def quasiyear_of(self, appointment_date: Union[date, datetime]) -> int:
+        """Quasiyear bucket of an appointment date: 0 = the year ending at the anchor's
+        month-end, 1 = the year before, ... (the fit's rule, without its oldest-bucket merge)."""
+        if self.quasiyear_anchor is None:
+            raise ValueError("quasiyear_anchor unknown for this model")
+        appointed = pd.Timestamp(appointment_date)
+        ref_month, ref_year = self.quasiyear_anchor.month, self.quasiyear_anchor.year
+        for t in range(31):
+            yu, yl = ref_year - t, ref_year - t - 1
+            ub = datetime(yu, ref_month, calendar.monthrange(yu, ref_month)[1])
+            lb = datetime(yl, ref_month, calendar.monthrange(yl, ref_month)[1])
+            if lb < appointed <= ub:
+                return t
+        raise ValueError(f"{appointment_date} is outside the quasiyear range of anchor {self.quasiyear_anchor}")
 
     def predict(
         self,
@@ -85,23 +123,12 @@ class VAModel:
         quasiyear: int = 0,
     ) -> float:
         """p_pred for one case; `quasiyear` 0 is the most recent bucket."""
-        casetype = simplify_case_types(
-            pd.Series([case_type]), family_group_label='AAAFamily group'
-        ).iloc[0]
-        if casetype in self.small_case_types:
-            casetype = 'zzzSmall'
-        station = 'AAAMilimani' if court_station == 'MILIMANI' else court_station
-        if station in self.small_court_stations:
-            station = 'zzzSmall'
-        levels = {
-            'appt_month': float(appt_month),
-            'quasiyear': float(quasiyear),
-            'casetype_simplified': casetype,
-            'court_station': station,
-            'referral_mode': referral_mode,
-            'highcourt': float(court_type == 'High Court'),
-            'courtofappeal': float(court_type == 'Court of Appeal'),
-        }
+        levels = self.encode_labels(case_type=case_type, court_station=court_station,
+                                    referral_mode=referral_mode, court_type=court_type)
+        levels['highcourt'] = float(levels['highcourt'])
+        levels['courtofappeal'] = float(levels['courtofappeal'])
+        levels['appt_month'] = float(appt_month)
+        levels['quasiyear'] = float(quasiyear)
         total = self.intercept
         for var, level in levels.items():
             coef = self.coefficients.get(var, {}).get(level, 0.0)
@@ -334,26 +361,26 @@ def estimate_va(
     # Group small court stations
     concltotal = df[df['case_status'] == 'CONCLUDED'].groupby('court_station').size()
     df = df.merge(concltotal.rename('concltotal_cs'), on='court_station', how='left')
-    small_cs_mask = (
-        (df['concltotal_cs'] <= config.min_court_station_cases) | pd.isna(df['concltotal_cs'])
-    )
-    small_court_stations = frozenset(df.loc[small_cs_mask, 'court_station'])
-    df.loc[small_cs_mask, 'court_station'] = 'zzzSmall'
+    # Pre-collapse labels are kept as columns (not attrs, which pd.concat drops) so a
+    # model fit from this frame -- fresh or via estimate_va_from_prepared -- can map
+    # a raw label to 'zzzSmall' the same way the fit did.
+    df['_court_station_precollapse'] = df['court_station']
+    df.loc[
+        (df['concltotal_cs'] <= config.min_court_station_cases) | pd.isna(df['concltotal_cs']),
+        'court_station'
+    ] = 'zzzSmall'
 
     # Group small case types
     concltotal = df[df['case_status'] == 'CONCLUDED'].groupby('casetype_simplified').size()
     df = df.merge(concltotal.rename('concltotal_ct'), on='casetype_simplified', how='left')
-    small_ct_mask = df['concltotal_ct'] < config.min_case_type_cases
-    small_case_types = frozenset(df.loc[small_ct_mask, 'casetype_simplified'])
-    df.loc[small_ct_mask, 'casetype_simplified'] = 'zzzSmall'
+    df['_casetype_precollapse'] = df['casetype_simplified']
+    df.loc[df['concltotal_ct'] < config.min_case_type_cases, 'casetype_simplified'] = 'zzzSmall'
+    df['_quasiyear_anchor'] = anchor_date
 
     # Clean, collapsed, pre-fit frame -- captured before df_case's label backfill
     # below and before _fit_and_score mutates df, so it can be reused verbatim by
-    # estimate_va_from_prepared for incremental refresh. The collapse sets ride along
-    # in attrs because the collapsed labels no longer reveal which raw labels they absorbed.
+    # estimate_va_from_prepared for incremental refresh.
     prepared_frame = df.copy()
-    prepared_frame.attrs['small_court_stations'] = small_court_stations
-    prepared_frame.attrs['small_case_types'] = small_case_types
 
     # Backfill the small-group collapse (mediator_id/court_station/casetype_simplified ->
     # -999/zzzSmall) onto df_case for rows that survived into the fitted df. Without this,
@@ -375,7 +402,7 @@ def estimate_va(
     df_case.loc[qy_mask, 'quasiyear'] = df['quasiyear'].max()
     df_case.loc[df_case['appt_month'].isna(), 'appt_month'] = anchor_date.month
 
-    result = _fit_and_score(df, df_case, config, small_court_stations, small_case_types)
+    result = _fit_and_score(df, df_case, config, **_labeling_from_prepared(prepared_frame))
     result.prepared = prepared_frame
     return result
 
@@ -420,13 +447,28 @@ def estimate_va_from_prepared(
     # Labels already collapsed in `prepared` -- unlike the fresh path, no 4.1 backfill here.
     df_case = df.copy()
 
-    result = _fit_and_score(
-        df, df_case, config,
-        prepared.attrs.get('small_court_stations', frozenset()),
-        prepared.attrs.get('small_case_types', frozenset()),
-    )
+    result = _fit_and_score(df, df_case, config, **_labeling_from_prepared(prepared))
     result.prepared = prepared
     return result
+
+
+def _labeling_from_prepared(prepared: pd.DataFrame) -> Dict:
+    """Collapse sets and quasiyear anchor recorded in a prepared frame's columns."""
+    def collapsed(label_col: str, precollapse_col: str) -> FrozenSet[str]:
+        if precollapse_col not in prepared.columns:
+            return frozenset()
+        rows = prepared[label_col] == 'zzzSmall'
+        return frozenset(prepared.loc[rows, precollapse_col].dropna())
+
+    anchors = (
+        prepared['_quasiyear_anchor'].dropna()
+        if '_quasiyear_anchor' in prepared.columns else pd.Series(dtype=object)
+    )
+    return {
+        'small_court_stations': collapsed('court_station', '_court_station_precollapse'),
+        'small_case_types': collapsed('casetype_simplified', '_casetype_precollapse'),
+        'quasiyear_anchor': pd.Timestamp(anchors.iloc[0]).to_pydatetime() if len(anchors) else None,
+    }
 
 
 def _fit_and_score(
@@ -435,6 +477,7 @@ def _fit_and_score(
     config: VAEstimationConfig,
     small_court_stations: FrozenSet[str] = frozenset(),
     small_case_types: FrozenSet[str] = frozenset(),
+    quasiyear_anchor: Optional[datetime] = None,
 ) -> VAEstimationResult:
     """
     Shared core: regression, prediction, and shrinkage over an already-cleaned frame.
@@ -514,6 +557,7 @@ def _fit_and_score(
         },
         small_court_stations=frozenset(small_court_stations),
         small_case_types=frozenset(small_case_types),
+        quasiyear_anchor=quasiyear_anchor,
     )
 
     # Handle pending cases (applied to both frames; the fresh-pending drop is df-only

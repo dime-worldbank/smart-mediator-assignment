@@ -490,6 +490,40 @@ def test_va_model_from_prepared_keeps_collapse_sets():
                                        start_date="2021-01-01", end_date="2023-01-01")
     assert reused.model.small_court_stations == fresh.model.small_court_stations == {"TINY"}
 
+    # The simulation appends resolved cases with pd.concat; the labeling must survive that.
+    appended = pd.concat([fresh.prepared, fresh.prepared.head(1).assign(id=99999)], ignore_index=True)
+    after_concat = estimate_va_from_prepared(appended, config=cfg,
+                                             start_date="2021-01-01", end_date="2023-01-01")
+    assert after_concat.model.small_court_stations == {"TINY"}
+    assert after_concat.model.quasiyear_anchor == fresh.model.quasiyear_anchor == datetime(2023, 1, 1)
+
+
+def test_va_model_quasiyear_of_matches_fit():
+    # quasiyear_of reproduces the fit's buckets for rows outside the merged oldest bucket.
+    cases = generate_synthetic_cases(n_cases=1000, n_mediators=30, seed=42)
+    cfg = VAEstimationConfig(reference_date=datetime(2023, 6, 1))
+    result = estimate_va(cases, config=cfg, start_date="2019-01-01", end_date="2023-06-01")
+    fitted = result.prepared
+    oldest = fitted['quasiyear'].max()
+    rows = fitted[fitted['quasiyear'] < oldest]
+    assert len(rows) > 100
+    for _, row in rows.iterrows():
+        assert result.model.quasiyear_of(row['med_appt_date']) == int(row['quasiyear'])
+
+
+def test_va_model_encode_labels():
+    model = va_estimation.VAModel(intercept=0.0, coefficients={},
+                                  small_court_stations=frozenset({'TINY'}),
+                                  small_case_types=frozenset({'Judicial Review'}))
+    assert model.encode_labels(case_type="Divorce and Separation", court_station="MILIMANI",
+                               referral_mode="Referred by Court", court_type="High Court") == {
+        'casetype_simplified': 'AAAFamily group', 'court_station': 'AAAMilimani',
+        'referral_mode': 'Referred by Court', 'highcourt': 1, 'courtofappeal': 0,
+    }
+    small = model.encode_labels(case_type="Judicial Review", court_station="TINY",
+                                referral_mode="Request by Parties", court_type="Court of Appeal")
+    assert (small['casetype_simplified'], small['court_station'], small['courtofappeal']) == ('zzzSmall', 'zzzSmall', 1)
+
 
 def test_va_model_predict_encoding():
     model = va_estimation.VAModel(
