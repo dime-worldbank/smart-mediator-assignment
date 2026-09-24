@@ -1012,7 +1012,7 @@ wheels = [
 
 [[package]]
 name = "smart-mediator-assignment"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "linearmodels" },
@@ -1049,7 +1049,7 @@ requires-dist = [
     { name = "gurobipy", marker = "extra == 'gurobi'", specifier = ">=10.0.0" },
     { name = "linearmodels", specifier = ">=6.0" },
     { name = "numpy", specifier = ">=1.24.0" },
-    { name = "osqp", marker = "extra == 'qp'", specifier = ">=0.6.3" },
+    { name = "osqp", marker = "extra == 'qp'", specifier = ">=1.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pulp", specifier = ">=2.7.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },

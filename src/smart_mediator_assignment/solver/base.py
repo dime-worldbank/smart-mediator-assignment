@@ -21,10 +21,10 @@ def eligible_mediators_for_case(
     as previously rejected mediators, Kadhi-court religion, unavailability on the date.
     """
     explicit = getattr(case, 'eligible_mediator_ids', None)
-    if explicit is not None:
-        return [m for m in explicit if m in valid_mediators]
-    by_type = med_by_court_case_type.get(case.court_station, {})
-    return [m for m in by_type.get(case.case_type, []) if m in valid_mediators]
+    if explicit is None:
+        explicit = med_by_court_case_type.get(case.court_station, {}).get(case.case_type, [])
+    # dict.fromkeys dedupes in order: a repeated id would add a duplicate edge to the LP/QP
+    return [m for m in dict.fromkeys(explicit) if m in valid_mediators]
 
 
 class BaseSolver(ABC):
