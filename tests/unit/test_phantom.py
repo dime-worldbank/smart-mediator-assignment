@@ -1,13 +1,19 @@
 import pytest
+from collections import Counter
 from datetime import date, datetime
 import random
 
 import numpy as np
 
 from smart_mediator_assignment.algorithm.phantom import (
-    generate_phantom_cases,
+    ArrivalPool,
+    build_arrival_pool,
     estimate_case_arrivals,
+    generate_phantom_cases,
+    generate_phantom_cases_from_pool,
 )
+from smart_mediator_assignment.algorithm.va_estimation import VAModel
+from smart_mediator_assignment.core import MediatorProfile, MediatorRoster, SimpleCase
 from tests.fixtures import (
     SCENARIO1_AVG_CASE_RATE,
     SCENARIO1_AVG_P_VAL,
@@ -242,18 +248,6 @@ class TestEstimateCaseArrivals:
         assert len(estimates) == 0
 
 
-
-from collections import Counter
-
-from smart_mediator_assignment.algorithm.phantom import (
-    ArrivalPool,
-    build_arrival_pool,
-    generate_phantom_cases_from_pool,
-)
-from smart_mediator_assignment.algorithm.va_estimation import VAModel
-from smart_mediator_assignment.core import SimpleCase
-
-
 def test_arrival_pool_keeps_recent_referrals_with_their_covariates():
     def arrival(case_id, referred, court_type="Magistrate Court"):
         return SimpleCase(id=case_id, case_type="Divorce and Separation", court_station="MILIMANI",
@@ -312,3 +306,26 @@ def test_phantoms_drawn_from_pool_and_scored_by_model():
     assert Counter(p.court_station for p in phantoms)["MILIMANI"] / len(phantoms) == pytest.approx(0.75, abs=0.05)
     assert generate() == (phantoms, next_id)    # reproducible from the rng seed
     assert generate(pool=ArrivalPool(records=(), daily_rate=0.0)) == ([], -5)
+
+    # with a roster, each phantom gets the eligibility rules' mediators on its arrival date
+    roster = MediatorRoster(
+        mediators=(
+            MediatorProfile(id=1, is_active=True, court_stations=frozenset({"KAKAMEGA"}),
+                            accreditation_categories=frozenset({"Family"})),
+            MediatorProfile(id=2, is_active=True, court_stations=frozenset({"MILIMANI"}),
+                            accreditation_categories=frozenset({"Commercial"})),
+            MediatorProfile(id=3, is_active=True, court_stations=frozenset({"MILIMANI"}),
+                            accreditation_categories=frozenset({"Commercial"}),
+                            unavailable=((date(2026, 3, 12), date(2026, 3, 14)),)),
+        ),
+        case_type_accreditations={"Divorce and Separation": frozenset({"Family"}),
+                                  "Civil Cases": frozenset({"Commercial"})},
+    )
+    with_roster, _ = generate(roster=roster)
+    for p, same_draw in zip(with_roster, phantoms):
+        assert p.p_value == same_draw.p_value
+        if p.court_station == "KAKAMEGA":
+            assert p.eligible_mediator_ids == [1]
+        else:
+            away = date(2026, 3, 12) <= p.referral_date < date(2026, 3, 14)
+            assert p.eligible_mediator_ids == ([2] if away else [2, 3])

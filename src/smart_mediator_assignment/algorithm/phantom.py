@@ -10,12 +10,13 @@ covariate vector from recent real arrivals and scores it with the fitted VA mode
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, List, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 from ..core.case import CaseProtocol, SimpleCase
+from ..core.eligibility import MediatorRoster
 from .va_estimation import VAModel
 from ..core.types import (
     AvgCaseRate,
@@ -156,6 +157,7 @@ def generate_phantom_cases_from_pool(
     va_model: VAModel,
     rng: np.random.Generator,
     starting_id: int = -1,
+    roster: Optional[MediatorRoster] = None,
 ) -> Tuple[List[SimpleCase], int]:
     """Phantom cases for the next `time_horizon` days, drawn from recent arrivals.
 
@@ -164,6 +166,10 @@ def generate_phantom_cases_from_pool(
     covariates matches recent arrivals. Each phantom's p_value is the VA model's
     prediction at its arrival date, undiscounted: the solver already puts real cases
     first (their assignment must sum to 1, a phantom's only to at most 1).
+
+    With a `roster`, each phantom gets `eligible_mediator_ids` from the eligibility rules on its
+    arrival date (e.g. Kadhi-court cases only to Muslim mediators), uncapped as in the smart
+    algorithm; without one, the solver falls back to its court-station x case-type mapping.
 
     Returns:
         Tuple of (list of phantom cases, next available phantom ID)
@@ -187,6 +193,10 @@ def generate_phantom_cases_from_pool(
                 p_value=p_val,
                 court_type=record['court_type'],
                 referral_mode=record['referral_mode'],
+                eligible_mediator_ids=None if roster is None else roster.eligible_ids(
+                    on_date=arrival_date, court_station=record['court_station'],
+                    case_type=record['case_type'], court_type=record['court_type'],
+                ),
             ))
             phantom_id -= 1
 

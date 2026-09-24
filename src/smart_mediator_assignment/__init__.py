@@ -13,6 +13,9 @@ from .core import (
     SimpleMediator,
     MediatorBelief,
     BeliefState,
+    AssignmentIssue,
+    MediatorProfile,
+    MediatorRoster,
 )
 from .solver import LPSolver, QPSolver, AssignmentDistribution
 from .algorithm import (
@@ -55,6 +58,10 @@ __all__ = [
     "SimpleMediator",
     "MediatorBelief",
     "BeliefState",
+    # Eligibility
+    "AssignmentIssue",
+    "MediatorProfile",
+    "MediatorRoster",
     # Solver
     "LPSolver",
     "QPSolver",
