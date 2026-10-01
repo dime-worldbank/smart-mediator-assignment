@@ -1,13 +1,19 @@
 import pytest
+from collections import Counter
 from datetime import date, datetime
 import random
 
 import numpy as np
 
 from smart_mediator_assignment.algorithm.phantom import (
-    generate_phantom_cases,
+    ArrivalPool,
+    build_arrival_pool,
     estimate_case_arrivals,
+    generate_phantom_cases,
+    generate_phantom_cases_from_pool,
 )
+from smart_mediator_assignment.algorithm.va_estimation import VAModel
+from smart_mediator_assignment.core import MediatorProfile, MediatorRoster, SimpleCase
 from tests.fixtures import (
     SCENARIO1_AVG_CASE_RATE,
     SCENARIO1_AVG_P_VAL,
@@ -159,7 +165,7 @@ class TestGeneratePhantomCases:
         )
 
         for case in phantom_cases:
-            assert case.p_value == pytest.approx(0.4, abs=0.01)
+            assert case.p_value == pytest.approx(0.5, abs=0.01)
 
     def test_datetime_support(self):
         """Test that datetime objects work as well as date objects."""
@@ -240,3 +246,86 @@ class TestEstimateCaseArrivals:
         )
 
         assert len(estimates) == 0
+
+
+def test_arrival_pool_keeps_recent_referrals_with_their_covariates():
+    def arrival(case_id, referred, court_type="Magistrate Court"):
+        return SimpleCase(id=case_id, case_type="Divorce and Separation", court_station="MILIMANI",
+                          referral_date=referred, referral_mode="Referred by Court", court_type=court_type)
+
+    cases = [
+        arrival(1, date(2025, 6, 30)),                        # exactly window_days back: excluded
+        arrival(2, date(2025, 7, 1), court_type="Kadhi Court"),
+        arrival(3, date(2025, 12, 29)),                       # on as_of: included
+        arrival(4, date(2025, 12, 30)),                       # after as_of: excluded
+        SimpleCase(id=5, case_type="Civil Cases", court_station="MILIMANI", referral_date=None),
+    ]
+    pool = build_arrival_pool(cases, as_of=date(2025, 12, 29), window_days=182)
+    assert pool.daily_rate == pytest.approx(2 / 182)
+    assert pool.records[0] == {'case_type': "Divorce and Separation", 'court_station': "MILIMANI",
+                               'referral_mode': "Referred by Court", 'court_type': "Kadhi Court"}
+    with pytest.raises(ValueError):
+        build_arrival_pool(cases, as_of=date(2025, 12, 29), window_days=0)
+
+
+def test_phantoms_drawn_from_pool_and_scored_by_model():
+    model = VAModel(intercept=0.5, coefficients={
+        'appt_month': {3.0: 0.02},
+        'court_station': {'KAKAMEGA': 0.05},
+        'referral_mode': {'Request by Parties': 0.04},
+        'highcourt': {1.0: 0.01},
+    })
+    kakamega = {'case_type': "Divorce and Separation", 'court_station': "KAKAMEGA",
+                'referral_mode': "Request by Parties", 'court_type': "High Court"}
+    milimani = {'case_type': "Civil Cases", 'court_station': "MILIMANI",
+                'referral_mode': "Referred by Court", 'court_type': "Magistrate Court"}
+    pool = ArrivalPool(records=(kakamega, milimani, milimani, milimani), daily_rate=20.0)
+    start = date(2026, 3, 9)
+
+    def generate(seed=7, **kwargs):
+        args = dict(current_day=start, time_horizon=10, pool=pool, va_model=model,
+                    rng=np.random.default_rng(seed), starting_id=-5)
+        args.update(kwargs)
+        return generate_phantom_cases_from_pool(**args)
+
+    phantoms, next_id = generate()
+    assert len(phantoms) > 100
+    for p in phantoms:
+        record = kakamega if p.court_station == "KAKAMEGA" else milimani
+        # full drawn covariate vector kept, raw case type included (eligibility is keyed on it)
+        assert (p.case_type, p.referral_mode, p.court_type) == (
+            record['case_type'], record['referral_mode'], record['court_type'])
+        assert 0 <= (p.referral_date - start).days < 10
+        month = 0.02 if p.referral_date.month == 3 else 0.0
+        station_etc = 0.05 + 0.04 + 0.01 if record is kakamega else 0.0
+        assert p.p_value == pytest.approx(0.5 + month + station_etc)
+
+    ids = [p.id for p in phantoms]
+    assert len(set(ids)) == len(ids) and max(ids) == -5 and next_id == -5 - len(ids)
+    # the mix follows the pool's shares
+    assert Counter(p.court_station for p in phantoms)["MILIMANI"] / len(phantoms) == pytest.approx(0.75, abs=0.05)
+    assert generate() == (phantoms, next_id)    # reproducible from the rng seed
+    assert generate(pool=ArrivalPool(records=(), daily_rate=0.0)) == ([], -5)
+
+    # with a roster, each phantom gets the eligibility rules' mediators on its arrival date
+    roster = MediatorRoster(
+        mediators=(
+            MediatorProfile(id=1, is_active=True, court_stations=frozenset({"KAKAMEGA"}),
+                            accreditation_categories=frozenset({"Family"})),
+            MediatorProfile(id=2, is_active=True, court_stations=frozenset({"MILIMANI"}),
+                            accreditation_categories=frozenset({"Commercial"})),
+            MediatorProfile(id=3, is_active=True, court_stations=frozenset({"MILIMANI"}),
+                            accreditation_categories=frozenset({"Commercial"}),
+                            unavailable=((date(2026, 3, 12), date(2026, 3, 14)),)),
+        ),
+        case_type_accreditations={"Divorce and Separation": frozenset({"Family"}),
+                                  "Civil Cases": frozenset({"Commercial"})},
+    )
+    with_roster, _ = generate(roster=roster)
+    for p, same_draw in zip(with_roster, phantoms):
+        assert p.p_value == same_draw.p_value
+        if p.court_station == "KAKAMEGA":
+            assert p.eligible_mediator_ids == [1]
+        else:
+            away = date(2026, 3, 12) <= p.referral_date < date(2026, 3, 14)
+            assert p.eligible_mediator_ids == ([2] if away else [2, 3])

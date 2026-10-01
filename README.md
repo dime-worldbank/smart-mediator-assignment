@@ -103,6 +103,49 @@ results = get_recommendations_batch(
 )
 ```
 
+### Per-case Eligibility
+
+Set `eligible_mediator_ids` on a case to replace the `med_by_court_case_type` lookup for that case,
+e.g. to exclude mediators who already declined it. It is still restricted to `valid_mediators`.
+
+`MediatorRoster` holds the production eligibility rules (active status, court station, accreditation
+for the case type, unavailability, Kadhi court → Muslim mediator, optional pending-case cap) over
+plain `MediatorProfile` snapshots, so the production app and the simulation share one definition:
+
+```python
+from smart_mediator_assignment import MediatorProfile, MediatorRoster
+
+roster = MediatorRoster(
+    mediators=tuple(MediatorProfile(id=m.id, is_active=..., court_stations=..., accreditation_categories=...,
+                                    religions=..., unavailable=..., pending_cases=...) for m in mediators),
+    case_type_accreditations={"Divorce and Separation": frozenset({"Family"}), ...},
+)
+case.eligible_mediator_ids = roster.eligible_ids(
+    on_date=today, court_station=case.court_station, case_type=case.case_type, court_type=case.court_type,
+    exclude=already_recommended,   # max_caseload=3 for the Control arm's cap; the smart algorithm has none
+)
+```
+
+`roster.assignment_issues(...)` returns each mediator's reasons (`AssignmentIssue`) instead.
+
+### Phantom Cases from Recent Arrivals
+
+```python
+import numpy as np
+from smart_mediator_assignment import build_arrival_pool, generate_phantom_cases_from_pool
+
+pool = build_arrival_pool(recent_cases, as_of=today, window_days=182)
+phantoms, _ = generate_phantom_cases_from_pool(
+    current_day=today, time_horizon=config.time_horizon, pool=pool,
+    va_model=va_result.model, rng=np.random.default_rng(seed), roster=roster,
+)
+result = get_recommendations(case, ..., phantom_cases=phantoms)
+```
+
+Each day draws a Poisson(`pool.daily_rate`) number of arrivals, then that many covariate vectors from
+the pool; each phantom's p is the VA model's prediction at its arrival date.
+With `roster`, each phantom also gets the eligibility rules' mediators on its arrival date.
+
 ### VA Estimation (Batch)
 
 Estimate mediator Value Added from historical case data using absorbing regression with shrinkage:
@@ -145,6 +188,11 @@ for med in result.mediator_vas:
 # Case-level predictions
 for case in result.case_predictions:
     print(f"Case {case.case_id}: p_pred={case.p_pred:.4f}")
+
+# The fitted model predicts p_pred for cases outside the fitted data
+p = result.model.predict(case_type="Civil Cases", court_station="MILIMANI",
+                         referral_mode="Referred by Court", court_type="Magistrate Court",
+                         appt_month=3, quasiyear=0)
 ```
 
 `estimate_va` always populates `result.prepared` with the cleaned, collapsed frame it fit

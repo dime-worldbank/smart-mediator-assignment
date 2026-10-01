@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Protocol, Union, Optional, runtime_checkable
+from typing import List, Protocol, Union, Optional, runtime_checkable
 
 
 @runtime_checkable
@@ -100,6 +100,10 @@ class SimpleCase:
     case_status: str = "PENDING"
     court_type: str = ""
     referral_mode: str = ""
+
+    # When set, the solvers use this list instead of the court_station x case_type
+    # eligibility mapping for this case (see solver.base.eligible_mediators_for_case).
+    eligible_mediator_ids: Optional[List[int]] = None
 
     # Aliases for backward compatibility with cadaster-algo
     @property

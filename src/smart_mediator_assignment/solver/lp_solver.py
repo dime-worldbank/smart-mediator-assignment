@@ -13,7 +13,7 @@ from pulp import (
     PULP_CBC_CMD,
 )
 
-from .base import BaseSolver, AssignmentDistribution
+from .base import BaseSolver, AssignmentDistribution, eligible_mediators_for_case
 from ..core.types import MediatorId, CaseId, CaseLoads, MediatorVAs, MedByCrtCaseType
 from ..core.case import CaseProtocol
 from ..config import AlgorithmConfig
@@ -91,6 +91,7 @@ class LPSolver(BaseSolver):
     ) -> None:
         """Build the bipartite graph of mediators to cases."""
         self._us = list(self.valid_mediators)
+        valid_mediators = set(self._us)
         self._vs = []
         self._edges = []
         self._case_arrival_time_by_id = {}
@@ -99,19 +100,9 @@ class LPSolver(BaseSolver):
         all_cases = phantom_cases + unassigned_cases
 
         for case in all_cases:
-            station_id = case.court_station
-            type_id = case.case_type
-
-            if station_id not in self.med_by_court_case_type:
-                continue
-            if type_id not in self.med_by_court_case_type[station_id]:
-                continue
-
-            relevant_meds = [
-                m
-                for m in self.med_by_court_case_type[station_id][type_id]
-                if m in self._us
-            ]
+            relevant_meds = eligible_mediators_for_case(
+                case, self.med_by_court_case_type, valid_mediators
+            )
 
             if not relevant_meds:
                 continue
