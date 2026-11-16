@@ -1051,7 +1051,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "osqp", marker = "extra == 'qp'", specifier = ">=1.0" },
     { name = "pandas", specifier = ">=2.0.0" },
-    { name = "pulp", specifier = ">=2.7.0" },
+    { name = "pulp", specifier = ">=2.7.0,<4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "scipy", specifier = ">=1.10.0" },
