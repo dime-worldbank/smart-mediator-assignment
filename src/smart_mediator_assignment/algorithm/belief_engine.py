@@ -30,18 +30,23 @@ def estimate_va_as_of(
     """The VA fit as it would run on `as_of`.
 
     `cases` must reflect what was known on `as_of`: a case concluded later is still PENDING
-    with no conclusion date or outcome. Cases referred after `as_of` are ignored. Case ages
-    (the 180-day and pending rules) are measured from `as_of`.
+    with no conclusion date or outcome. Cases referred after `as_of`, and cases appointed
+    before `start_date`, are ignored; cases not yet appointed are kept for prediction. Case
+    ages (the 180-day and pending rules) are measured from `as_of`.
     """
     as_of_dt = _as_datetime(as_of)
+    start_dt = _as_datetime(start_date)
+    # estimate_va applies its own start_date window only when end_date precedes the
+    # reference date, which is never the case here, so the start is enforced on the input
     known = [
         c for c in cases
         if c.referral_date is not None and _as_datetime(c.referral_date) <= as_of_dt
+        and (c.mediator_appointment_date is None or _as_datetime(c.mediator_appointment_date) >= start_dt)
     ]
     return estimate_va(
         known,
         VAEstimationConfig(reference_date=as_of_dt),
-        start_date=_as_datetime(start_date),
+        start_date=start_dt,
         end_date=as_of_dt,
     )
 

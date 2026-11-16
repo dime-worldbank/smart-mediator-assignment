@@ -170,3 +170,28 @@ def test_estimate_va_as_of_ignores_cases_referred_after_as_of():
     with_later = estimate_va_as_of(base + [later], as_of, date(2016, 4, 6))
     assert 99 not in with_later.get_p_pred_dict()
     assert with_later.get_va_dict() == estimate_va_as_of(base, as_of, date(2016, 4, 6)).get_va_dict()
+
+
+def test_estimate_va_as_of_ignores_cases_appointed_before_start_date():
+    base = [
+        _case(i, (i % 3) + 1, i % 2, date(2022, 1, 1), date(2022, 1, 10), date(2022, 2, 1))
+        for i in range(12)
+    ]
+    early = [
+        _case(100 + i, 1, 1, date(2015, 1, 1), date(2015, 1, 10), date(2015, 2, 1))
+        for i in range(6)
+    ]
+    as_of = date(2023, 6, 1)
+    with_early = estimate_va_as_of(base + early, as_of, date(2016, 4, 6))
+    assert not {100 + i for i in range(6)} & set(with_early.get_p_pred_dict())
+    assert with_early.get_va_dict() == estimate_va_as_of(base, as_of, date(2016, 4, 6)).get_va_dict()
+
+
+def test_estimate_va_as_of_keeps_unappointed_cases_for_prediction():
+    base = [
+        _case(i, (i % 3) + 1, i % 2, date(2022, 1, 1), date(2022, 1, 10), date(2022, 2, 1))
+        for i in range(12)
+    ]
+    waiting = _case(200, None, None, date(2023, 5, 1), None, None, status="PENDING")
+    result = estimate_va_as_of(base + [waiting], date(2023, 6, 1), date(2016, 4, 6))
+    assert 200 in result.get_p_pred_dict()
