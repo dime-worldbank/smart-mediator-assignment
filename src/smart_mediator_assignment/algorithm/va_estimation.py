@@ -148,6 +148,52 @@ class VAModel:
             court_type=court_type, appt_month=arrival_date.month, quasiyear=0,
         )
 
+    def to_dict(self) -> Dict:
+        """JSON-safe form. Coefficient tables are [level, coefficient] pairs because numeric
+        levels (appt_month, quasiyear) would become strings as JSON object keys; a NaN
+        coefficient is stored as None, since Postgres JSON has no NaN."""
+        def plain(value):
+            if isinstance(value, (bool, np.bool_)):
+                return bool(value)
+            if isinstance(value, (int, np.integer)):
+                return int(value)
+            if isinstance(value, (float, np.floating)):
+                return float(value)
+            return str(value)
+
+        return {
+            'intercept': float(self.intercept),
+            'coefficients': {
+                str(var): [
+                    [plain(level), None if pd.isna(coef) else float(coef)]
+                    for level, coef in table.items()
+                ]
+                for var, table in self.coefficients.items()
+            },
+            'small_court_stations': sorted(self.small_court_stations),
+            'small_case_types': sorted(self.small_case_types),
+            'quasiyear_anchor': (
+                None if self.quasiyear_anchor is None
+                else pd.Timestamp(self.quasiyear_anchor).isoformat()
+            ),
+            'merged_quasiyear': None if self.merged_quasiyear is None else int(self.merged_quasiyear),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "VAModel":
+        anchor = data.get('quasiyear_anchor')
+        return cls(
+            intercept=data['intercept'],
+            coefficients={
+                var: {level: float('nan') if coef is None else coef for level, coef in pairs}
+                for var, pairs in data['coefficients'].items()
+            },
+            small_court_stations=frozenset(data.get('small_court_stations', ())),
+            small_case_types=frozenset(data.get('small_case_types', ())),
+            quasiyear_anchor=None if anchor is None else pd.Timestamp(anchor).to_pydatetime(),
+            merged_quasiyear=data.get('merged_quasiyear'),
+        )
+
 
 @dataclass
 class VAEstimationResult:
