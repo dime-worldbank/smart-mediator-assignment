@@ -94,6 +94,10 @@ def initial_mediator_sds(
     return sds
 
 
+def _non_finite(values: Dict[MediatorId, float]) -> List[MediatorId]:
+    return sorted(m for m, v in values.items() if not math.isfinite(v))
+
+
 @dataclass
 class BeliefEngine:
     """Per-mediator belief mean and sd, the prior they are updated from, and the outcomes
@@ -115,8 +119,16 @@ class BeliefEngine:
         global_sigma: float,
     ) -> "BeliefEngine":
         """A mediator in `va` starts at (their VA, sds[mediator]); one missing from it
-        starts at (0, global_sigma)."""
+        starts at (0, global_sigma). A fit with a non-finite sigma, VA or sd is rejected:
+        estimate_va's sigma is the square root of a covariance, NaN when that is negative."""
+        if not math.isfinite(global_sigma) or global_sigma <= 0:
+            raise ValueError(f"VA fit sigma must be finite and positive, got {global_sigma!r}")
         vas = va.get_va_dict()
+        wanted = set(mediator_ids)
+        bad = _non_finite({m: v for m, v in vas.items() if m in wanted}) + \
+            _non_finite({m: sds[m] for m in wanted if m in vas})
+        if bad:
+            raise ValueError(f"Non-finite VA or sd for mediators {sorted(set(bad))}")
         mu, sd = {}, {}
         for mediator_id in mediator_ids:
             if mediator_id in vas:
@@ -148,6 +160,9 @@ class BeliefEngine:
         history; both become their new prior and their history is cleared. Mediators missing
         from the re-fit are left as they were."""
         vas = va.get_va_dict()
+        bad = _non_finite({m: v for m, v in vas.items() if m in self.mu})
+        if bad:
+            raise ValueError(f"Non-finite VA for mediators {bad}; the re-fit was not applied")
         for mediator_id in self.mu:
             if mediator_id not in vas:
                 continue
@@ -164,7 +179,15 @@ class BeliefEngine:
             self.history[mediator_id] = ([], [])
 
     def to_dict(self) -> dict:
-        """JSON-safe form; mediator ids become strings, as JSON object keys must."""
+        """JSON-safe form; mediator ids become strings, as JSON object keys must. Raises on a
+        non-finite value, which strict JSON (and Postgres JSON) can't hold."""
+        bad = set()
+        for m in self.mu:
+            numbers = [self.mu[m], self.sd[m], self.prior_mu[m], self.prior_sd[m], *self.history[m][0], *self.history[m][1]]
+            if not all(math.isfinite(x) for x in numbers):
+                bad.add(m)
+        if bad or not math.isfinite(self.global_sigma):
+            raise ValueError(f"Non-finite belief values (mediators {sorted(bad)}, sigma {self.global_sigma!r})")
         return {
             'global_sigma': self.global_sigma,
             'mediators': {

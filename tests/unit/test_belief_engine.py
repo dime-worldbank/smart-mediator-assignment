@@ -95,7 +95,38 @@ def test_engine_round_trips_through_json():
     engine = started({1: 0.2, 2: -0.1}, {1: 0.1, 2: 0.2}, [1, 2])
     engine.record_conclusion(1, outcome=1, p_value=0.4)
     engine.daily_update()
-    assert BeliefEngine.from_dict(json.loads(json.dumps(engine.to_dict()))) == engine
+    # allow_nan=False: Postgres JSON has no NaN or Infinity
+    assert BeliefEngine.from_dict(json.loads(json.dumps(engine.to_dict(), allow_nan=False))) == engine
+
+
+def test_start_rejects_a_fit_with_non_finite_sigma():
+    # estimate_va's sigma is sqrt of a covariance, NaN when that covariance is negative
+    with pytest.raises(ValueError, match="sigma"):
+        BeliefEngine.start(va=fake_va({1: 0.2}, sigma=float('nan')), sds={1: 0.1}, mediator_ids=[1],
+                           global_sigma=float('nan'))
+
+
+def test_start_rejects_non_finite_vas_or_sds():
+    with pytest.raises(ValueError, match="1"):
+        started({1: float('nan')}, {1: 0.1}, [1])
+    with pytest.raises(ValueError, match="2"):
+        started({1: 0.2, 2: 0.1}, {1: 0.1, 2: float('inf')}, [1, 2])
+
+
+def test_refit_with_a_non_finite_va_changes_nothing():
+    engine = started({1: 0.2, 2: -0.1}, {1: 0.1, 2: 0.2}, [1, 2])
+    engine.record_conclusion(1, outcome=1, p_value=0.4)
+    before = BeliefEngine.from_dict(engine.to_dict())
+    with pytest.raises(ValueError, match="2"):
+        engine.refit(fake_va({1: 0.5, 2: float('nan')}))
+    assert engine == before
+
+
+def test_to_dict_rejects_non_finite_values():
+    engine = started({1: 0.2}, {1: 0.1}, [1])
+    engine.sd[1] = float('nan')
+    with pytest.raises(ValueError, match="1"):
+        engine.to_dict()
 
 
 def _case(cid, med, outcome, referral, appt, concl, status="CONCLUDED"):
