@@ -37,6 +37,8 @@ from .algorithm import (
     BeliefEngine,
     estimate_va_as_of,
     initial_mediator_sds,
+    classify_unmapped_cell,
+    mediator_treatment_shares,
     estimate_lognormal_duration_params,
     clean_hazard_sample,
     simplify_case_types,
@@ -93,6 +95,9 @@ __all__ = [
     "BeliefEngine",
     "estimate_va_as_of",
     "initial_mediator_sds",
+    # Arms for cells missing from the RCT mapping
+    "classify_unmapped_cell",
+    "mediator_treatment_shares",
     # Duration estimation
     "estimate_lognormal_duration_params",
     "clean_hazard_sample",
