@@ -34,6 +34,11 @@ from .algorithm import (
     VAModel,
     estimate_va,
     estimate_va_from_prepared,
+    BeliefEngine,
+    estimate_va_as_of,
+    initial_mediator_sds,
+    classify_unmapped_cell,
+    mediator_treatment_shares,
     estimate_lognormal_duration_params,
     clean_hazard_sample,
     simplify_case_types,
@@ -46,7 +51,7 @@ from .assignment import (
     get_recommendations_batch,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # Config
@@ -86,6 +91,13 @@ __all__ = [
     # Case-type taxonomy (shared by VA + duration)
     "LEGACY_2_SIMPLIFIED_CTYPE",
     "simplify_case_types",
+    # Belief engine (shared with the RCT simulation)
+    "BeliefEngine",
+    "estimate_va_as_of",
+    "initial_mediator_sds",
+    # Arms for cells missing from the RCT mapping
+    "classify_unmapped_cell",
+    "mediator_treatment_shares",
     # Duration estimation
     "estimate_lognormal_duration_params",
     "clean_hazard_sample",
