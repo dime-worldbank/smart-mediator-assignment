@@ -3,6 +3,7 @@ from .phantom import (
     generate_phantom_cases,
     estimate_case_arrivals,
     ArrivalPool,
+    ARRIVAL_WINDOW_DAYS,
     build_arrival_pool,
     generate_phantom_cases_from_pool,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "update_belief_batch",
     "generate_phantom_cases",
     "ArrivalPool",
+    "ARRIVAL_WINDOW_DAYS",
     "build_arrival_pool",
     "generate_phantom_cases_from_pool",
     "estimate_case_arrivals",

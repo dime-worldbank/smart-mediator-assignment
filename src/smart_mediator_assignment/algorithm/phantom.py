@@ -112,6 +112,11 @@ def generate_phantom_cases(
     return phantom_cases, phantom_id
 
 
+# Days of recent real arrivals phantom cases are drawn from: the research team's 6 months. The
+# Cadaster app and the RCT simulation both use this, so they draw from the same window.
+ARRIVAL_WINDOW_DAYS = 182
+
+
 @dataclass(frozen=True)
 class ArrivalPool:
     """Covariate vectors of recent real arrivals, and their daily arrival rate."""
@@ -123,7 +128,7 @@ class ArrivalPool:
 def build_arrival_pool(
     cases: Iterable[CaseProtocol],
     as_of: Union[date, datetime],
-    window_days: int = 182,
+    window_days: int = ARRIVAL_WINDOW_DAYS,
 ) -> ArrivalPool:
     """Pool of cases referred in the `window_days` up to and including `as_of`.
 

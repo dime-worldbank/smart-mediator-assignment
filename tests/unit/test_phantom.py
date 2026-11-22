@@ -1,11 +1,12 @@
 import pytest
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import random
 
 import numpy as np
 
 from smart_mediator_assignment.algorithm.phantom import (
+    ARRIVAL_WINDOW_DAYS,
     ArrivalPool,
     build_arrival_pool,
     estimate_case_arrivals,
@@ -329,3 +330,14 @@ def test_phantoms_drawn_from_pool_and_scored_by_model():
         else:
             away = date(2026, 3, 12) <= p.referral_date < date(2026, 3, 14)
             assert p.eligible_mediator_ids == ([2] if away else [2, 3])
+
+
+def test_default_arrival_window_is_the_shared_constant():
+    # the Cadaster app and the RCT simulation both use this default, so it lives in one place
+    today = date(2026, 3, 1)
+    def case(days_ago):
+        return SimpleCase(id=days_ago, case_type="Civil Cases", court_station="MOMBASA",
+                          referral_date=today - timedelta(days=days_ago))
+    pool = build_arrival_pool([case(ARRIVAL_WINDOW_DAYS - 1), case(ARRIVAL_WINDOW_DAYS)], as_of=today)
+    assert len(pool.records) == 1
+    assert ARRIVAL_WINDOW_DAYS == 182
