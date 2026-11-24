@@ -373,3 +373,27 @@ def test_gurobi_lambda_zero_all_cases_past_is_finite():
     for cid in (1, 2, 3):
         assert all(math.isfinite(p) for _, p in dist[cid]), cid
         assert abs(sum(p for _, p in dist[cid]) - 1.0) < 1e-6, cid
+
+
+@pytest.mark.skipif(osqp_missing, reason="osqp extra not installed")
+def test_osqp_solves_to_1e5_tolerance(monkeypatch):
+    """1e-6 took up to 121 s on production-sized problems (1 real + ~320 shadow cases, ~1,800
+    mediators); 1e-5 took 4-14 s and moved no mediator's probability by more than 0.7 points."""
+    import osqp
+    from smart_mediator_assignment import QPSolver
+
+    settings = {}
+    real_setup = osqp.OSQP.setup
+
+    def record(self, *args, **kwargs):
+        settings.update(kwargs)
+        return real_setup(self, *args, **kwargs)
+
+    monkeypatch.setattr(osqp.OSQP, "setup", record)
+    solver = QPSolver(capacity=3, lambda_penalty=1.0, time_horizon=10, valid_mediators=[1, 2],
+                      mediator_case_loads={1: 0, 2: 1}, mediator_vas={1: 0.1, 2: -0.05},
+                      med_by_court_case_type={"MILIMANI": {"Family group": [1, 2]}})
+    case = SimpleCase(id=1, case_type="Family group", court_station="MILIMANI",
+                      referral_date=date(2023, 1, 1), p_value=0.5)
+    solver.solve([case], phantom_cases=[], current_day=date(2023, 1, 1))
+    assert (settings["eps_abs"], settings["eps_rel"]) == (1e-5, 1e-5)
