@@ -276,8 +276,11 @@ class QPSolver(BaseSolver):
             u=u,
             verbose=False,
             polishing=True,
-            eps_abs=1e-6,
-            eps_rel=1e-6,
+            # 1e-6 took up to 121 s on production-sized problems (1 real + ~320 shadow cases,
+            # ~1,800 mediators), too slow for a web request; 1e-5 took 4-14 s and moved no
+            # mediator's assignment probability by more than 0.7 points
+            eps_abs=1e-5,
+            eps_rel=1e-5,
             max_iter=100000,
             scaled_termination=True,
             warm_starting=True,
